@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PhenoFit — does a reported variant explain THIS patient?</title>
+<style>
+  :root {
+    --bg: #0f1420; --panel: #171d2b; --panel2: #1e2536; --line: #2b3346;
+    --ink: #e7ecf5; --muted: #9aa6bd; --accent: #5b8cff; --good: #37d39b;
+    --warn: #ffb454; --bad: #ff6b6b; --star: #ffd15c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    padding: 22px 28px; border-bottom: 1px solid var(--line);
+    background: linear-gradient(180deg, #131a29, #0f1420);
+  }
+  header h1 { margin: 0 0 4px; font-size: 20px; }
+  header .brand { color: var(--accent); font-weight: 800; letter-spacing: .01em; }
+  header p { margin: 0; color: var(--muted); font-size: 13.5px; max-width: 900px; }
+  .wrap { display: grid; grid-template-columns: 390px 1fr; gap: 0; min-height: calc(100vh - 92px); }
+  .inputs { padding: 22px 24px; border-right: 1px solid var(--line); }
+  .results { padding: 22px 28px; }
+  label { display: block; font-weight: 600; margin: 0 0 6px; font-size: 13px; }
+  .hint { color: var(--muted); font-weight: 400; font-size: 12px; }
+  textarea {
+    width: 100%; min-height: 118px; resize: vertical; padding: 10px 12px;
+    background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 10px; font: 13.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  textarea:focus { outline: none; border-color: var(--accent); }
+  .field { margin-bottom: 18px; }
+  button {
+    width: 100%; padding: 12px 16px; border: 0; border-radius: 10px; cursor: pointer;
+    background: var(--accent); color: white; font-weight: 700; font-size: 14.5px;
+  }
+  button:disabled { opacity: .55; cursor: default; }
+  button.secondary { width: auto; padding: 8px 14px; font-size: 13px; background: var(--panel2); border: 1px solid var(--line); color: var(--ink); }
+  button.secondary:hover { border-color: var(--accent); }
+  .empty { color: var(--muted); margin-top: 40px; text-align: center; }
+  .patient-chips { display: flex; flex-wrap: wrap; gap: 7px; margin: 6px 0 22px; }
+  .chip {
+    background: var(--panel2); border: 1px solid var(--line); border-radius: 999px;
+    padding: 4px 11px; font-size: 12.5px; color: var(--ink);
+  }
+  .chip .hp { color: var(--muted); font-size: 11px; margin-left: 5px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 16px 18px; margin-bottom: 14px;
+  }
+  .card.top { border-color: #35507f; box-shadow: 0 0 0 1px #35507f inset; }
+  .card-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .rank { color: var(--muted); font-variant-numeric: tabular-nums; font-weight: 700; }
+  .gene { font-size: 16px; font-weight: 700; }
+  .hgvs { color: var(--muted); font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; }
+  .stars { color: var(--star); letter-spacing: 2px; font-size: 15px; }
+  .tier {
+    margin-left: auto; font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 999px;
+    background: var(--panel2); border: 1px solid var(--line);
+  }
+  .row { margin-top: 10px; font-size: 13px; display: flex; gap: 8px; }
+  .row .k { color: var(--muted); min-width: 72px; flex-shrink: 0; }
+  .tag { display: inline-block; padding: 1px 8px; border-radius: 6px; font-size: 12px; margin: 0 5px 5px 0; }
+  .tag.exp { background: rgba(55,211,155,.13); color: var(--good); border: 1px solid rgba(55,211,155,.3); }
+  .tag.broad { background: rgba(91,140,255,.12); color: #9db8ff; border: 1px solid rgba(91,140,255,.3); }
+  .tag.unx { background: rgba(255,107,107,.1); color: var(--bad); border: 1px solid rgba(255,107,107,.28); }
+  a.src { color: var(--accent); text-decoration: none; font-size: 12px; }
+  a.src:hover { text-decoration: underline; }
+  .flags { margin-top: 22px; }
+  .flag {
+    background: var(--panel2); border-left: 3px solid var(--warn); border-radius: 8px;
+    padding: 11px 14px; margin-bottom: 10px; font-size: 13px;
+  }
+  .flag.good { border-left-color: var(--good); }
+  .flag.dual { border-left-color: var(--accent); }
+  .err { background: rgba(255,107,107,.12); border: 1px solid rgba(255,107,107,.4); color: #ffc2c2;
+         padding: 12px 14px; border-radius: 10px; margin-top: 20px; }
+  .loading { color: var(--muted); margin-top: 40px; text-align: center; }
+  .disease { color: var(--muted); font-size: 12.5px; font-style: italic; }
+  h2.sec { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; }
+  .drop {
+    border: 1.5px dashed var(--line); border-radius: 12px; padding: 18px 16px; text-align: center;
+    color: var(--muted); cursor: pointer; transition: border-color .12s, background .12s;
+    background: var(--panel);
+  }
+  .drop:hover { border-color: var(--accent); }
+  .drop.over { border-color: var(--accent); background: rgba(91,140,255,.08); color: var(--ink); }
+  .drop .big { display: block; font-weight: 700; color: var(--ink); margin-bottom: 3px; font-size: 13.5px; }
+  .drop .sub { font-size: 12px; }
+  #drop-status { margin-top: 6px; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="brand">PhenoFit</span> <span style="color:var(--muted);font-weight:400;">— does a reported variant explain THIS patient?</span></h1>
+  <p>The lab reports the variants. You hold the patient. PhenoFit ranks the reported variants by how well each gene's known disease explains this specific patient — separates what's explained from what isn't, cites every link to HPO, and flags what nothing explains.</p>
+</header>
+
+<div class="wrap">
+  <section class="inputs">
+    <div class="field" id="pdf-field" style="display:none">
+      <label>Lab report <span class="hint">— drop a PDF; Claude fills variants + features</span></label>
+      <div id="drop" class="drop">
+        <span class="big">Drop a lab-report PDF here</span>
+        <span class="sub">or click to choose a file</span>
+      </div>
+      <input id="pdf-input" type="file" accept="application/pdf,.pdf" style="display:none" />
+      <div id="drop-status" class="hint"></div>
+    </div>
+    <div class="field">
+      <label>Reported variants
+        <span class="hint">— one per line: <code>GENE</code> or <code>GENE:c.HGVS</code></span>
+      </label>
+      <textarea id="variants">SCN1A:c.3637C>T
+FBN1:c.4082G>A
+MYH7:c.1063G>A</textarea>
+    </div>
+    <div class="field" id="ai-field" style="display:none">
+      <label>Clinical notes <span class="hint">— paste free text; Claude extracts the phenotypes</span></label>
+      <textarea id="notes" placeholder="e.g. 4 yo with recurrent febrile and afebrile seizures since infancy, global developmental delay, and gait ataxia. Bilateral ectopia lentis and aortic root dilatation. Tall stature with arachnodactyly."></textarea>
+      <button id="extract" class="secondary" style="margin-top:8px">Extract phenotypes with Claude</button>
+      <div id="extract-status" class="hint" style="margin-top:6px"></div>
+    </div>
+    <div class="field">
+      <label>Patient features
+        <span class="hint">— one per line, plain English or HP:xxxxxxx</span>
+      </label>
+      <textarea id="features">Seizure
+Global developmental delay
+Gait ataxia
+Ectopia lentis
+Aortic root dilatation
+Tall stature
+Arachnodactyly</textarea>
+    </div>
+    <button id="run">Run causality review</button>
+  </section>
+
+  <section class="results" id="results">
+    <div class="empty">Enter the reported variants and the patient's features, then run the review.</div>
+  </section>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+function starHtml(stars) {
+  let out = "";
+  for (const ch of stars) {
+    if (ch === "*") out += '<span>&#9733;</span>';
+    else out += '<span style="color:#39415a">&#9733;</span>';
+  }
+  return out;
+}
+
+function tierColor(level) {
+  return ["#ff6b6b","#ff6b6b","#ffb454","#37d39b","#37d39b"][level] || "#9aa6bd";
+}
+
+async function run() {
+  const variants = $("variants").value.split("\n").map(s => s.trim()).filter(Boolean);
+  const features = $("features").value.split("\n").map(s => s.trim()).filter(Boolean);
+  $("run").disabled = true;
+  $("results").innerHTML = '<div class="loading">Querying HPO and scoring… (a few seconds per gene)</div>';
+  try {
+    const resp = await fetch("/api/review", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({variants, features})
+    });
+    render(await resp.json());
+  } catch (e) {
+    $("results").innerHTML = '<div class="err">Request failed: ' + e + '</div>';
+  } finally {
+    $("run").disabled = false;
+  }
+}
+
+function render(data) {
+  if (data.error) {
+    let extra = "";
+    if (data.unresolved && data.unresolved.length)
+      extra = "<br>Unresolved features: " + data.unresolved.join(", ");
+    $("results").innerHTML = '<div class="err">' + data.error + extra + '</div>';
+    return;
+  }
+  let html = "";
+
+  html += '<h2 class="sec">Patient — presented features</h2><div class="patient-chips">';
+  for (const p of data.patient)
+    html += '<span class="chip">' + p.label + '<span class="hp">' + p.hpo_id + '</span></span>';
+  html += '</div>';
+  if (data.unresolved && data.unresolved.length)
+    html += '<div class="flag">Could not map to HPO (ignored): ' + data.unresolved.join(", ") + '</div>';
+
+  html += '<h2 class="sec">Causality ranking — best fit first</h2>';
+  data.fits.forEach((f, idx) => {
+    html += '<div class="card' + (idx === 0 && f.tier_level >= 2 ? ' top' : '') + '">';
+    html += '<div class="card-head">';
+    html += '<span class="rank">#' + f.rank + '</span>';
+    html += '<span class="stars">' + starHtml(f.stars) + '</span>';
+    html += '<span class="gene">' + f.gene + '</span>';
+    if (f.hgvs) html += '<span class="hgvs">' + f.hgvs + '</span>';
+    html += '<span class="tier" style="color:' + tierColor(f.tier_level) + '">' + f.tier +
+            ' · ' + f.explained_count + '/' + f.total + '</span>';
+    html += '</div>';
+
+    if (f.explained.length) {
+      html += '<div class="row"><span class="k">explains</span><span>';
+      for (const m of f.explained)
+        html += m.exact
+          ? '<span class="tag exp">' + m.label + '</span>'
+          : '<span class="tag broad">' + m.label + ' <em>via ' + m.via + '</em></span>';
+      html += '</span></div>';
+    }
+    if (f.unexplained.length) {
+      html += '<div class="row"><span class="k">leaves</span><span>';
+      for (const u of f.unexplained) html += '<span class="tag unx">' + u + '</span>';
+      html += '</span></div>';
+    }
+    if (f.diseases.length)
+      html += '<div class="row"><span class="k">disease</span><span class="disease">' + f.diseases.join("; ") + '</span></div>';
+    if (!f.knowledge_found)
+      html += '<div class="row"><span class="k">note</span><span class="disease">No HPO knowledge retrieved — unscored, not guessed.</span></div>';
+    if (f.source)
+      html += '<div class="row"><span class="k">source</span><a class="src" href="' + f.source + '" target="_blank" rel="noopener">HPO annotation &#8599;</a></div>';
+    html += '</div>';
+  });
+
+  if (data.flags && data.flags.length) {
+    html += '<div class="flags"><h2 class="sec">Flags — what to weigh</h2>';
+    for (const fl of data.flags) {
+      let cls = "flag";
+      if (/full presented picture/i.test(fl)) cls += " good";
+      if (/dual diagnosis/i.test(fl)) cls += " dual";
+      html += '<div class="' + cls + '">' + fl + '</div>';
+    }
+    html += '</div>';
+  }
+
+  $("results").innerHTML = html;
+}
+
+async function extract() {
+  const notes = $("notes").value.trim();
+  if (!notes) { $("extract-status").textContent = "Paste some clinical notes first."; return; }
+  $("extract").disabled = true;
+  $("extract-status").textContent = "Asking Claude, then grounding each phrase in HPO…";
+  try {
+    const resp = await fetch("/api/extract", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({notes})
+    });
+    const data = await resp.json();
+    if (data.error) { $("extract-status").innerHTML = '<span style="color:var(--bad)">' + data.error + '</span>'; return; }
+    const labels = data.phenotypes.map(p => p.label);
+    $("features").value = labels.join("\n");
+    let msg = "Extracted " + labels.length + " HPO term(s); review/edit below, then run.";
+    if (data.ungrounded && data.ungrounded.length)
+      msg += " Not grounded in HPO: " + data.ungrounded.join(", ") + ".";
+    $("extract-status").textContent = msg;
+  } catch (e) {
+    $("extract-status").innerHTML = '<span style="color:var(--bad)">Request failed: ' + e + '</span>';
+  } finally {
+    $("extract").disabled = false;
+  }
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(",")[1] || "");
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+async function ingestPdf(file) {
+  const status = $("drop-status");
+  if (!file) return;
+  if (file.type && file.type !== "application/pdf" && !/\.pdf$/i.test(file.name)) {
+    status.innerHTML = '<span style="color:var(--bad)">That is not a PDF.</span>';
+    return;
+  }
+  status.textContent = "Reading “" + file.name + "”, then asking Claude + grounding in HPO…";
+  try {
+    const pdf_base64 = await fileToBase64(file);
+    const resp = await fetch("/api/ingest-pdf", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({pdf_base64})
+    });
+    const data = await resp.json();
+    if (data.error) { status.innerHTML = '<span style="color:var(--bad)">' + data.error + '</span>'; return; }
+
+    const vlines = (data.variants || []).map(v => v.hgvs ? (v.gene + ":" + v.hgvs) : v.gene);
+    if (vlines.length) $("variants").value = vlines.join("\n");
+    const labels = (data.phenotypes || []).map(p => p.label);
+    if (labels.length) $("features").value = labels.join("\n");
+
+    let msg = "Found " + vlines.length + " variant(s) and " + labels.length + " HPO term(s). Review/edit, then run.";
+    if (data.ungrounded && data.ungrounded.length)
+      msg += " Not grounded in HPO: " + data.ungrounded.join(", ") + ".";
+    status.innerHTML = '<span style="color:var(--good)">' + msg + '</span>';
+  } catch (e) {
+    status.innerHTML = '<span style="color:var(--bad)">Request failed: ' + e + '</span>';
+  }
+}
+
+function wireDropzone() {
+  const drop = $("drop"), input = $("pdf-input");
+  drop.addEventListener("click", () => input.click());
+  input.addEventListener("change", () => ingestPdf(input.files[0]));
+  ["dragenter", "dragover"].forEach(ev =>
+    drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+  ["dragleave", "dragend", "drop"].forEach(ev =>
+    drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
+  drop.addEventListener("drop", (e) => {
+    const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    ingestPdf(file);
+  });
+}
+
+fetch("/api/config").then(r => r.json()).then(cfg => {
+  if (cfg.ai_enabled) {
+    $("ai-field").style.display = "block";
+    $("pdf-field").style.display = "block";
+    wireDropzone();
+  }
+}).catch(() => {});
+
+$("run").addEventListener("click", run);
+$("extract").addEventListener("click", extract);
+</script>
+</body>
+</html>

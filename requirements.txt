@@ -1,0 +1,4 @@
+httpx==0.27.2          # HPO / Jax ontology API client
+anthropic==0.116.0     # AI edge: lab-report PDF + clinical notes -> structured input
+pypdf==6.14.2          # lab-report PDF -> text for the drag-and-drop
+reportlab==5.0.0       # only to (re)generate the fictional sample lab report

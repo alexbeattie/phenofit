@@ -1,0 +1,223 @@
+"""HPO (Human Phenotype Ontology) client, via the public Jax ontology API.
+
+Three jobs:
+  1. free text -> HPO term, so a clinician can type "seizures" instead of
+     looking up HP:0001250;
+  2. gene symbol -> the set of HPO phenotype ids known for that gene's diseases
+     (the knowledge we match the patient against);
+  3. term -> its is_a ancestors, so a gene annotated to a broad term (Seizure)
+     still explains a patient's more specific feature (Focal-onset seizure).
+
+Public API (ontology.jax.org), no key required. Every gene result carries an
+openable source URL so a clinician can verify the gene-disease link.
+"""
+
+from __future__ import annotations
+
+import re
+
+import httpx
+
+from .http import get_json, now_iso
+from .models import GenePhenotypeKnowledge, Phenotype, Source
+
+JAX_API = "https://ontology.jax.org/api"
+
+# Ontology roots carry no clinical meaning.
+_ROOT_NAMES = {"All", "Phenotypic abnormality"}
+
+# Grouping / "container" category nodes, e.g. "Abnormality of the cardiovascular
+# system", "Abnormal nervous system physiology", "Neurodevelopmental
+# abnormality". Matching a patient feature to a gene THROUGH one of these is
+# spurious — it only means the gene has *some* annotation somewhere under that
+# whole category (which is how a connective-tissue gene like FBN1 would appear to
+# "explain" developmental delay, via the shared parent "Neurodevelopmental
+# abnormality"). We exclude these from ancestor matching, while keeping real (if
+# broad) clinical phenotypes like "Seizure" or "Cardiomyopathy". Erring toward
+# leaving a feature unexplained is the safe direction for a tool whose whole
+# thesis is not overfitting a partial match.
+_SYSTEM_CONTAINER_RE = re.compile(
+    r"^(abnormality of (the )?.+ system"
+    r"|abnormal .+ system (morphology|physiology)"
+    r"|.+ abnormality)$",  # grouping categories like "Neurodevelopmental abnormality"
+    re.IGNORECASE,
+)
+
+
+# --- free text -> HPO term -------------------------------------------------
+
+def _norm(text: str) -> str:
+    """Lowercase and collapse whitespace for name/synonym comparison."""
+
+    return re.sub(r"\s+", " ", text.strip().lower())
+
+
+def _singular(text: str) -> str:
+    """Crude singularization so 'seizures' matches the term named 'Seizure'."""
+
+    return text[:-1] if len(text) > 3 and text.endswith("s") else text
+
+
+def _rank_terms(terms: list[dict], query: str) -> tuple[dict | None, bool]:
+    """Pick the best HPO term for a free-text query.
+
+    The Jax search endpoint ranks by its own relevance, which for common terms
+    surfaces an over-specific child ("Seizure cluster") above the canonical term
+    ("Seizure"). Grounding a patient's feature to the wrong, narrower term is the
+    quiet-mangle failure this tool exists to avoid, so we prefer a match on the
+    term's own name/synonym over raw search rank.
+
+    Returns (term, strong): `strong` is True when the query matched a term's
+    exact name, its singular/plural form, or one of its synonyms — i.e. a
+    confident grounding rather than a fall-back to the API's top hit.
+    """
+
+    if not terms:
+        return None, False
+
+    qn = _norm(query)
+    qs = _singular(qn)
+    exact: list[dict] = []
+    normalized: list[dict] = []
+    synonym: list[dict] = []
+    for t in terms:
+        if not t.get("id"):
+            continue
+        name = _norm(t.get("name", ""))
+        if name == qn:
+            exact.append(t)
+        elif _singular(name) == qs:
+            normalized.append(t)
+        syns = {_norm(s) for s in (t.get("synonyms") or [])}
+        if qn in syns or qs in {_singular(s) for s in syns}:
+            synonym.append(t)
+
+    for bucket in (exact, normalized, synonym):
+        if bucket:
+            # Shortest name = the most canonical/general term in the bucket.
+            return min(bucket, key=lambda x: len(x.get("name", ""))), True
+    return terms[0], False  # fall back to the API's top-ranked result
+
+
+def _search_terms(client: httpx.Client, query: str) -> list[dict]:
+    # `limit` is honored by the API; `max` is silently capped at 10.
+    data = get_json(client, f"{JAX_API}/hp/search", params={"q": query, "limit": "40"})
+    if isinstance(data, dict):
+        return data.get("terms") or data.get("results") or []
+    return []
+
+
+def resolve_term(client: httpx.Client, query: str) -> Phenotype | None:
+    """Resolve free text (or an HP:xxxxxxx id) to a single HPO term."""
+
+    q = query.strip()
+    if q.upper().startswith("HP:"):
+        data = get_json(client, f"{JAX_API}/hp/terms/{q.upper()}")
+        if isinstance(data, dict) and data.get("id"):
+            return Phenotype(hpo_id=data["id"], label=data.get("name", q))
+        return None
+
+    best, strong = _rank_terms(_search_terms(client, q), q)
+
+    # For very common terms the canonical entry can be missing from the first
+    # query's result page (e.g. "Seizure" doesn't surface HP:0001250, but
+    # "Seizures" does). If we only got a weak fall-back, retry once with a
+    # singular/plural variant and take a confident hit if it appears.
+    if not strong:
+        ql = q.lower()
+        alt = _singular(ql) if ql.endswith("s") else q + "s"
+        if _norm(alt) != _norm(q):
+            alt_best, alt_strong = _rank_terms(_search_terms(client, alt), q)
+            if alt_strong:
+                best = alt_best
+
+    if best is None or not best.get("id"):
+        return None
+    return Phenotype(hpo_id=best["id"], label=best.get("name", q))
+
+
+# --- term -> is_a ancestors ------------------------------------------------
+
+# Ancestors are shared across genes/patients within a run, so cache them to keep
+# the is_a graph walk to one API call per distinct term.
+_ANCESTOR_CACHE: dict[str, set[str]] = {}
+
+
+def ancestor_ids(client: httpx.Client, hpo_id: str) -> set[str]:
+    """The term itself plus all its HPO is_a ancestors (minus roots/containers)."""
+
+    if hpo_id in _ANCESTOR_CACHE:
+        return _ANCESTOR_CACHE[hpo_id]
+
+    ids = {hpo_id}
+    try:
+        data = get_json(client, f"{JAX_API}/hp/terms/{hpo_id}/ancestors")
+        if isinstance(data, list):
+            for t in data:
+                name = t.get("name", "")
+                if not t.get("id") or name in _ROOT_NAMES or _SYSTEM_CONTAINER_RE.match(name):
+                    continue
+                ids.add(t["id"])
+    except Exception:
+        pass  # fall back to exact-only matching for this term
+    _ANCESTOR_CACHE[hpo_id] = ids
+    return ids
+
+
+# --- gene -> known disease phenotypes --------------------------------------
+
+# Gene knowledge is stable within a run and often queried repeatedly (a gene
+# reported twice, or the same panel across many eval cases), so cache it.
+_GENE_CACHE: dict[str, GenePhenotypeKnowledge] = {}
+
+
+def _gene_id(client: httpx.Client, gene: str) -> str | None:
+    """Map a gene symbol to its NCBIGene id via the network search endpoint."""
+
+    data = get_json(client, f"{JAX_API}/network/search/GENE", params={"q": gene, "limit": "10"})
+    results = data.get("results", []) if isinstance(data, dict) else []
+    for r in results:
+        if r.get("name", "").upper() == gene.upper():
+            return r.get("id")
+    return None
+
+
+def fetch_gene_phenotypes(client: httpx.Client, gene: str) -> GenePhenotypeKnowledge:
+    """All HPO phenotypes and diseases associated with a gene."""
+
+    key = gene.upper()
+    if key in _GENE_CACHE:
+        return _GENE_CACHE[key]
+
+    web_url = f"https://hpo.jax.org/browse/gene/{gene}"
+    source = Source(name="HPO (Jax)", url=web_url, retrieved_at=now_iso(), detail=gene)
+
+    gene_id = _gene_id(client, gene)
+    if not gene_id:
+        result = GenePhenotypeKnowledge(gene=gene, found=False, source=source)
+        _GENE_CACHE[key] = result
+        return result
+
+    source.detail = f"{gene} ({gene_id})"
+    source.url = f"https://ontology.jax.org/api/network/annotation/{gene_id}"
+
+    data = get_json(client, f"{JAX_API}/network/annotation/{gene_id}")
+    if not isinstance(data, dict) or "phenotypes" not in data:
+        result = GenePhenotypeKnowledge(gene=gene, found=False, source=source)
+        _GENE_CACHE[key] = result
+        return result
+
+    phenotype_labels = {p["id"]: p.get("name", p["id"]) for p in data.get("phenotypes", []) if p.get("id")}
+    phenotype_ids = set(phenotype_labels)
+    diseases = [d.get("name", "") for d in data.get("diseases", []) if d.get("name")]
+
+    result = GenePhenotypeKnowledge(
+        gene=gene,
+        found=bool(phenotype_ids),
+        diseases=diseases,
+        phenotype_ids=phenotype_ids,
+        phenotype_labels=phenotype_labels,
+        source=source,
+    )
+    _GENE_CACHE[key] = result
+    return result
