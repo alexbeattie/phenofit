@@ -68,6 +68,10 @@
   .tag.exp { background: rgba(55,211,155,.13); color: var(--good); border: 1px solid rgba(55,211,155,.3); }
   .tag.broad { background: rgba(91,140,255,.12); color: #9db8ff; border: 1px solid rgba(91,140,255,.3); }
   .tag.unx { background: rgba(255,107,107,.1); color: var(--bad); border: 1px solid rgba(255,107,107,.28); }
+  .rar { display: inline-block; margin-left: 6px; padding: 0 5px; border-radius: 4px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; vertical-align: middle; }
+  .rar-rare { background: rgba(255,196,77,.18); color: #ffca66; border: 1px solid rgba(255,196,77,.4); }
+  .rar-uncommon { background: rgba(160,160,180,.14); color: #b9b9c9; border: 1px solid rgba(160,160,180,.3); }
+  .rar-common { background: rgba(120,120,140,.1); color: #8f8f9f; border: 1px solid rgba(120,120,140,.22); }
   a.src { color: var(--accent); text-decoration: none; font-size: 12px; }
   a.src:hover { text-decoration: underline; }
   .flags { margin-top: 22px; }
@@ -197,6 +201,7 @@ function render(data) {
     html += '<div class="flag">Could not map to HPO (ignored): ' + data.unresolved.join(", ") + '</div>';
 
   html += '<h2 class="sec">Causality ranking — best fit first</h2>';
+  html += '<p class="hint" style="margin:-6px 0 10px;">Score is rarity-weighted — a rare, specific finding counts more than a common one. Badges show each explained feature\u2019s rarity.</p>';
   data.fits.forEach((f, idx) => {
     html += '<div class="card' + (idx === 0 && f.tier_level >= 2 ? ' top' : '') + '">';
     html += '<div class="card-head">';
@@ -204,16 +209,19 @@ function render(data) {
     html += '<span class="stars">' + starHtml(f.stars) + '</span>';
     html += '<span class="gene">' + f.gene + '</span>';
     if (f.hgvs) html += '<span class="hgvs">' + f.hgvs + '</span>';
+    const pct = f.knowledge_found ? ' · ' + Math.round(f.score * 100) + '%' : '';
     html += '<span class="tier" style="color:' + tierColor(f.tier_level) + '">' + f.tier +
-            ' · ' + f.explained_count + '/' + f.total + '</span>';
+            ' · ' + f.explained_count + '/' + f.total + pct + '</span>';
     html += '</div>';
 
     if (f.explained.length) {
       html += '<div class="row"><span class="k">explains</span><span>';
-      for (const m of f.explained)
+      for (const m of f.explained) {
+        const rar = m.rarity ? ' <span class="rar rar-' + m.rarity + '">' + m.rarity + '</span>' : '';
         html += m.exact
-          ? '<span class="tag exp">' + m.label + '</span>'
-          : '<span class="tag broad">' + m.label + ' <em>via ' + m.via + '</em></span>';
+          ? '<span class="tag exp">' + m.label + rar + '</span>'
+          : '<span class="tag broad">' + m.label + ' <em>via ' + m.via + '</em>' + rar + '</span>';
+      }
       html += '</span></div>';
     }
     if (f.unexplained.length) {

@@ -104,6 +104,7 @@ class ExplainedMatch:
     phenotype: Phenotype  # the patient's feature
     via: str              # the gene-annotated term that explained it (label)
     exact: bool           # True = same HPO term; False = matched a broader ancestor
+    weight: float = 1.0   # information-content weight of the feature (rare -> higher)
 
     @property
     def display(self) -> str:

@@ -16,6 +16,7 @@ the wrong term:
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 from phenofit import hpo
 
@@ -64,6 +65,32 @@ class RankTermsTests(unittest.TestCase):
         best, strong = hpo._rank_terms([], "Seizure")
         self.assertIsNone(best)
         self.assertFalse(strong)
+
+
+class InformationContentTests(unittest.TestCase):
+    def _fake_get_json(self, counts_by_term):
+        def _fn(_client, url, **_kw):
+            tid = url.rstrip("/").split("/")[-1]
+            return {"diseases": [{"id": f"D{i}"} for i in range(counts_by_term.get(tid, 0))]}
+        return _fn
+
+    def test_rare_term_has_higher_weight_than_common(self):
+        counts = {"HP:RARE": 5, "HP:COMMON": 6000}
+        with mock.patch.object(hpo, "get_json", self._fake_get_json(counts)):
+            hpo._IC_CACHE.clear()
+            w_rare = hpo.ic_weight(None, "HP:RARE")
+            w_common = hpo.ic_weight(None, "HP:COMMON")
+        self.assertGreater(w_rare, w_common)
+        # weights stay within [floor, 1.0]
+        self.assertLessEqual(w_rare, 1.0)
+        self.assertGreaterEqual(w_common, 0.25)
+
+    def test_unknown_term_degrades_to_floor(self):
+        def _boom(_client, _url, **_kw):
+            raise RuntimeError("network down")
+        with mock.patch.object(hpo, "get_json", _boom):
+            hpo._IC_CACHE.clear()
+            self.assertEqual(hpo.ic_weight(None, "HP:9999999"), 0.25)  # IC 0 -> floor
 
 
 class ContainerFilterTests(unittest.TestCase):

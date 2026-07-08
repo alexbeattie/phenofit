@@ -18,7 +18,7 @@ from __future__ import annotations
 import argparse
 
 from .config import load_dotenv
-from .engine import review_causality
+from .engine import rarity_tag, review_causality
 from .extract import extract_from_notes
 from .hpo import resolve_term
 from .http import get_client
@@ -56,15 +56,18 @@ def _print_report(report: CausalityReport) -> None:
         print(f"  - {ph.hpo_id:12s} {ph.label}")
 
     print("\n[causality ranking] reported variants, best fit first")
+    print("  (score is rarity-weighted: a rare, specific finding counts more than a common one)")
     for rank, f in enumerate(report.fits, 1):
+        pct = f" {f.score:.0%}" if f.knowledge_found else ""
         print(
             f"\n  {rank}. [{f.tier.stars}] {f.variant.label:22s} "
-            f"{f.tier.display:9s} (explains {len(f.explained)}/{len(p.phenotypes)})"
+            f"{f.tier.display:9s} (explains {len(f.explained)}/{len(p.phenotypes)}{pct})"
         )
         if f.variant.lab_classification:
             print(f"       lab call  : {f.variant.lab_classification}")
         if f.explained:
-            print(f"       explains  : {', '.join(m.display for m in f.explained)}")
+            parts = [f"{m.display} [{rarity_tag(m.weight)}]" for m in f.explained]
+            print(f"       explains  : {', '.join(parts)}")
         if f.unexplained:
             print(f"       leaves    : {', '.join(ph.label for ph in f.unexplained)}")
         if f.diseases:

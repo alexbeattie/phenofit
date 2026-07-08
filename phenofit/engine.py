@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import httpx
 
-from .hpo import ancestor_ids, fetch_gene_phenotypes
+from .hpo import ancestor_ids, fetch_gene_phenotypes, ic_weight
 from .models import (
     CausalityReport,
     ExplainedMatch,
@@ -43,13 +43,30 @@ def _tier_for(score: float) -> FitTier:
     return FitTier.UNLIKELY
 
 
+def rarity_tag(weight: float) -> str:
+    """Human label for an information-content weight (rare features score more).
+
+    Cutoffs are calibrated against the IC weight of real HPO terms (weight =
+    0.25 + 0.75 * IC/IC_max, with IC_max the theoretical single-disease maximum):
+    a term annotated to under ~1% of diseases lands around 0.6+ ("rare"), the 1-10%
+    band around 0.42-0.6 ("uncommon"), and the common tail below that. This keeps a
+    genuinely specific finding like Ectopia lentis labelled "rare" rather than the
+    compressed value the raw normalization would suggest.
+    """
+    if weight >= 0.6:
+        return "rare"
+    if weight >= 0.42:
+        return "uncommon"
+    return "common"
+
+
 def _match_feature(
-    client: httpx.Client, feature: Phenotype, knowledge: GenePhenotypeKnowledge
+    client: httpx.Client, feature: Phenotype, knowledge: GenePhenotypeKnowledge, weight: float
 ) -> ExplainedMatch | None:
     """Does the gene explain this patient feature, exactly or via a broader term?"""
 
     if feature.hpo_id in knowledge.phenotype_ids:
-        return ExplainedMatch(phenotype=feature, via=feature.label, exact=True)
+        return ExplainedMatch(phenotype=feature, via=feature.label, exact=True, weight=weight)
 
     # Ontology-aware: a gene annotated to a broader term (e.g. Seizure) explains
     # the patient's more specific feature (e.g. Focal-onset seizure).
@@ -60,12 +77,16 @@ def _match_feature(
             (knowledge.phenotype_labels[a] for a in broader if a in knowledge.phenotype_labels),
             "",
         )
-        return ExplainedMatch(phenotype=feature, via=via_label or feature.label, exact=False)
+        return ExplainedMatch(phenotype=feature, via=via_label or feature.label, exact=False, weight=weight)
     return None
 
 
 def _score_one(
-    client: httpx.Client, variant: ReportedVariant, patient: PatientProfile, knowledge: GenePhenotypeKnowledge
+    client: httpx.Client,
+    variant: ReportedVariant,
+    patient: PatientProfile,
+    knowledge: GenePhenotypeKnowledge,
+    weights: dict[str, float],
 ) -> VariantFit:
     if not knowledge.found:
         return VariantFit(
@@ -81,20 +102,26 @@ def _score_one(
     explained: list[ExplainedMatch] = []
     unexplained: list[Phenotype] = []
     for feature in patient.phenotypes:
-        match = _match_feature(client, feature, knowledge)
+        match = _match_feature(client, feature, knowledge, weights[feature.hpo_id])
         if match is not None:
             explained.append(match)
         else:
             unexplained.append(feature)
 
-    total = len(patient.phenotypes) or 1
-    score = len(explained) / total
+    # Score is the fraction of the patient's features the gene explains, but
+    # weighted by each feature's information content: a gene that explains one
+    # rare, specific finding scores higher than one that explains several common,
+    # non-specific ones. Falls back to plain fraction if IC couldn't be fetched
+    # (all weights equal).
+    total_weight = sum(weights[p.hpo_id] for p in patient.phenotypes) or 1.0
+    explained_weight = sum(m.weight for m in explained)
+    score = explained_weight / total_weight
     tier = _tier_for(score)
 
     disease_hint = f" ({knowledge.diseases[0]})" if knowledge.diseases else ""
     rationale = (
-        f"{variant.gene}{disease_hint} explains {len(explained)}/{total} of the "
-        f"patient's features"
+        f"{variant.gene}{disease_hint} explains {len(explained)}/{len(patient.phenotypes)} "
+        f"of the patient's features (weighted by rarity: {score:.0%})"
     )
     if unexplained:
         rationale += f"; leaves unexplained: {', '.join(p.label for p in unexplained)}."
@@ -116,10 +143,14 @@ def _score_one(
 def review_causality(
     client: httpx.Client, patient: PatientProfile, variants: list[ReportedVariant]
 ) -> CausalityReport:
+    # Information-content weight for each presented feature, computed once and
+    # shared across all variants so a rare finding pulls its weight consistently.
+    weights = {p.hpo_id: ic_weight(client, p.hpo_id) for p in patient.phenotypes}
+
     fits: list[VariantFit] = []
     for v in variants:
         knowledge = fetch_gene_phenotypes(client, v.gene)
-        fits.append(_score_one(client, v, patient, knowledge))
+        fits.append(_score_one(client, v, patient, knowledge, weights))
 
     # Rank purely on fit so the ordering stays objective. Tie-break toward the
     # gene with more EXACT phenotype matches (vs broadened ancestor matches): a

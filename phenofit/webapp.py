@@ -24,7 +24,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .config import load_dotenv
-from .engine import review_causality
+from .engine import rarity_tag as _rarity_tag, review_causality
 from .extract import extract_from_notes, ingest_report
 from .hpo import resolve_term
 from .http import get_client
@@ -86,7 +86,8 @@ def _run_review(payload: dict) -> dict:
                 "explained_count": len(f.explained),
                 "total": len(report.patient.phenotypes),
                 "explained": [
-                    {"label": m.phenotype.label, "exact": m.exact, "via": m.via}
+                    {"label": m.phenotype.label, "exact": m.exact, "via": m.via,
+                     "weight": round(m.weight, 3), "rarity": _rarity_tag(m.weight)}
                     for m in f.explained
                 ],
                 "unexplained": [p.label for p in f.unexplained],

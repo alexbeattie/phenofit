@@ -17,8 +17,10 @@ re-analysis.
 Claude is used only at the ingestion edge: it reads a lab-report PDF or clinical
 notes into structured variants and phenotype phrases via SDK structured outputs,
 then every phrase is grounded in a real HPO term deterministically — the model
-never invents an ontology id. Scoring stays AI-free, sourced, and abstains when it
-lacks knowledge. Built from scratch; MIT; top-1 89% on a 9-case benchmark.
+never invents an ontology id. Scoring stays AI-free, sourced, rarity-weighted (a
+rare, specific finding outweighs a common one via HPO information content), and
+abstains when it lacks knowledge. Built from scratch; MIT; top-1 89% on a 9-case
+benchmark.
 
 ---
 
@@ -46,10 +48,12 @@ is editable before I run it." Point at the filled variant + feature boxes.
 
 **[1:35–2:30] Run it — the dual diagnosis.**
 Click Run. "No single variant explains everything. FBN1 — Marfan — explains the
-ectopia lentis, aortic root, tall stature. SCN1A explains the seizures,
-developmental delay, ataxia that FBN1 can't. PhenoFit ranks both and flags a
-possible dual diagnosis: two independent causes. Each feature is tagged explained
-or not; every gene links back to its HPO source; a gene with no knowledge is marked
+ectopia lentis, aortic root, tall stature. Notice those are tagged *rare*: the
+score is rarity-weighted, so FBN1's specific findings count for more than the
+common seizures and developmental delay. SCN1A explains those common features that
+FBN1 can't. PhenoFit ranks both and flags a possible dual diagnosis: two
+independent causes. Each feature is tagged explained or not, and rare/uncommon/
+common; every gene links back to its HPO source; a gene with no knowledge is marked
 unscored, never guessed."
 
 **[2:30–3:00] Trust + eval, close.**
@@ -74,7 +78,8 @@ without an API key. That's PhenoFit."
 - **Claude Use (25%):** structured-output ingestion edge with a hard grounding
   contract (LLM proposes, ontology validates), so AI never touches the scored call.
 - **Depth & Execution (20%):** deterministic sourced engine, ontology-aware
-  matching with container-node exclusion, abstention, 23 offline tests, a
-  measured eval with an honest caveat.
+  matching with container-node exclusion, information-content (rarity) weighting
+  from the HPO annotation network, abstention, 26 offline tests, a measured eval
+  with an honest caveat.
 - **Demo (30%):** one-drop PDF → ranked, cited answer with a genuine
   dual-diagnosis story; runs from a clean clone.

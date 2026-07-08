@@ -29,7 +29,11 @@ Two clinical traps it exists to counter:
 
 - **The mind overfits.** It's easy to talk yourself into a match when the overlap
   is partial. PhenoFit scores against an explicit feature set, so a partial match
-  reads as *"explains 3 of 5"*, never "close enough."
+  reads as *"explains 3 of 5"*, never "close enough." And it doesn't count every
+  feature the same: the score is **rarity-weighted**, so a gene that explains one
+  rare, specific finding (*ectopia lentis*, ~73 diseases) outranks one that
+  explains several common, non-specific ones (*developmental delay*, ~2,900) —
+  matching the clinical instinct that a rare finding carries more diagnostic weight.
 - **Partial explanations hide second diagnoses.** Features no reported variant
   explains are surfaced, not glossed — the trigger to consider an unreported
   extension, a **second independent cause** (~5% of solved cases), or a genome
@@ -41,9 +45,20 @@ Two clinical traps it exists to counter:
 Input: the **reported variants** (`GENE` or `GENE:c.HGVS`) and the patient's
 **features** (HPO ids or free text like `"seizures"`). Output: a ranked list, and
 for each variant — the features it **explains** (exactly, or "via broader" through
-the HPO `is_a` graph), the features it **leaves unexplained**, the associated
-diseases, an **openable HPO source link**, and case-level **flags** (strong single
-fit / possible dual diagnosis / residual features nothing explains).
+the HPO `is_a` graph, each tagged **rare / uncommon / common**), the features it
+**leaves unexplained**, the associated diseases, an **openable HPO source link**,
+and case-level **flags** (strong single fit / possible dual diagnosis / residual
+features nothing explains).
+
+### How the score works
+
+For each variant, the fit score is the fraction of the patient's features the gene
+explains, **weighted by each feature's information content** — the rarer the term
+across HPO's disease annotations, the more it counts. A term's weight is
+`0.25 + 0.75 · IC/IC_max`, where `IC = −log(diseases with the term / all diseases)`
+comes straight from the HPO/Jax annotation network. Nothing is ever weighted to
+zero (a common feature still counts, just less), and if the rarity signal can't be
+fetched the score gracefully degrades to a plain explained-fraction.
 
 ## How Claude is used (the ingestion edge)
 
@@ -130,9 +145,10 @@ other myopathies.
 ./.venv/bin/python -m unittest discover -s tests
 ```
 
-23 offline tests (no network, no key): the scoring engine (matching, tiering,
-explained/unexplained split, ranking, residual, dual-diagnosis), the HPO term
-ranking + container filtering, the mocked-SDK ingestion edge, and PDF extraction.
+26 offline tests (no network, no key): the scoring engine (matching, tiering,
+explained/unexplained split, ranking, residual, dual-diagnosis, rarity weighting),
+the HPO term ranking + container filtering + information-content weighting, the
+mocked-SDK ingestion edge, and PDF extraction.
 
 ## Architecture
 
@@ -140,9 +156,10 @@ ranking + container filtering, the mocked-SDK ingestion edge, and PDF extraction
 phenofit/
   models.py     data models; every evidence item carries a Source(url, retrieved_at)
   http.py       polite HTTP for the HPO API (Retry-After + exponential backoff)
-  hpo.py        HPO/Jax client: free-text -> term, gene -> phenotypes, is_a ancestors
-  engine.py     the reverse match: score/rank variants, split explained vs unexplained,
-                residual + dual-diagnosis detection
+  hpo.py        HPO/Jax client: free-text -> term, gene -> phenotypes, is_a ancestors,
+                information-content (rarity) weight per term
+  engine.py     the reverse match: rarity-weighted score/rank of variants, split
+                explained vs unexplained, residual + dual-diagnosis detection
   llm.py        Claude edge via anthropic SDK structured outputs (Pydantic schemas)
   extract.py    ingestion: Claude proposes -> HPO grounds -> validated terms only
   pdf.py        lab-report PDF -> text (pypdf)
@@ -156,8 +173,7 @@ tests/          offline unit tests
 
 ## Scope & honesty
 
-PhenoFit is decision-support, not a diagnosis. Scoring currently weights every
-feature equally — rarity/information-content weighting (a rare, specific finding
-should outweigh a common one) and penetrance/zygosity are the top next steps.
-Text extraction assumes a selectable-text PDF; scanned/image-only reports would
-need OCR (the tool says so rather than guessing).
+PhenoFit is decision-support, not a diagnosis. Scoring now weights features by
+information content (rarity); penetrance and zygosity weighting are the top next
+steps. Text extraction assumes a selectable-text PDF; scanned/image-only reports
+would need OCR (the tool says so rather than guessing).

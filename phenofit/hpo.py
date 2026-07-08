@@ -14,6 +14,7 @@ openable source URL so a clinician can verify the gene-disease link.
 
 from __future__ import annotations
 
+import math
 import re
 
 import httpx
@@ -22,6 +23,13 @@ from .http import get_json, now_iso
 from .models import GenePhenotypeKnowledge, Phenotype, Source
 
 JAX_API = "https://ontology.jax.org/api"
+
+# Size of the HPO disease-annotation corpus (diseases annotated under the root
+# "Phenotypic abnormality", HP:0000118). Used as the denominator for a term's
+# information content. Held as a constant so scoring is fast and deterministic
+# rather than paying a multi-thousand-row fetch of the root on every run; it
+# drifts slowly and only the *ratio* between terms drives the weighting.
+_TOTAL_DISEASES = 12888
 
 # Ontology roots carry no clinical meaning.
 _ROOT_NAMES = {"All", "Phenotypic abnormality"}
@@ -162,6 +170,52 @@ def ancestor_ids(client: httpx.Client, hpo_id: str) -> set[str]:
         pass  # fall back to exact-only matching for this term
     _ANCESTOR_CACHE[hpo_id] = ids
     return ids
+
+
+# --- term -> information content (rarity) -----------------------------------
+
+# IC is stable within (and across) runs, so cache it per term.
+_IC_CACHE: dict[str, float] = {}
+
+
+def information_content(client: httpx.Client, hpo_id: str) -> float:
+    """Information content of a term: -log(diseases with it / all diseases).
+
+    A rare, specific feature (Ectopia lentis, ~73 diseases) carries far more IC
+    than a common, non-specific one (Global developmental delay, ~2900), which is
+    exactly the clinical intuition that a rare finding is worth more diagnostic
+    weight than a common one. Returns 0.0 (the least-informative floor) if the
+    count can't be retrieved, so scoring degrades to near-equal weighting rather
+    than failing.
+    """
+
+    if hpo_id in _IC_CACHE:
+        return _IC_CACHE[hpo_id]
+
+    ic = 0.0
+    try:
+        data = get_json(client, f"{JAX_API}/network/annotation/{hpo_id}")
+        if isinstance(data, dict):
+            n_diseases = len(data.get("diseases", []))
+            freq = max(n_diseases, 1) / _TOTAL_DISEASES
+            ic = -math.log(freq)
+    except Exception:
+        pass  # unknown -> 0.0, i.e. treated as maximally common
+    _IC_CACHE[hpo_id] = ic
+    return ic
+
+
+# The IC of a maximally rare term (annotated to a single disease). Used to
+# normalize IC into a bounded per-feature weight so no feature is ever weighted
+# to zero (a common feature still counts, just less).
+_MAX_IC = math.log(_TOTAL_DISEASES)
+
+
+def ic_weight(client: httpx.Client, hpo_id: str, *, floor: float = 0.25) -> float:
+    """Map a term's IC to a weight in [floor, 1.0]. Common -> floor, rare -> 1.0."""
+
+    ic = information_content(client, hpo_id)
+    return floor + (1.0 - floor) * (ic / _MAX_IC)
 
 
 # --- gene -> known disease phenotypes --------------------------------------

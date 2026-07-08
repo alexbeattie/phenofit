@@ -62,6 +62,14 @@ def _fake_gene(_client, gene: str) -> GenePhenotypeKnowledge:
     )
 
 
+def _equal_weight(_client, _hpo_id, **_kw):
+    return 1.0
+
+
+def _weights_of(patient, w=1.0):
+    return {p.hpo_id: w for p in patient.phenotypes}
+
+
 SEIZURE = Phenotype("HP:SEIZURE", "Seizure")
 FOCAL = Phenotype("HP:FOCAL_SEIZURE", "Focal seizure")
 DD = Phenotype("HP:DD", "Developmental delay")
@@ -84,7 +92,7 @@ class MatchTests(unittest.TestCase):
     @mock.patch.object(engine, "ancestor_ids", _fake_ancestors)
     def test_exact_match(self):
         k = _fake_gene(None, "SCN1A")
-        m = engine._match_feature(None, SEIZURE, k)
+        m = engine._match_feature(None, SEIZURE, k, 1.0)
         self.assertIsNotNone(m)
         self.assertTrue(m.exact)
 
@@ -92,7 +100,7 @@ class MatchTests(unittest.TestCase):
     def test_ancestor_match_is_not_exact(self):
         # Patient has focal seizure; gene annotated only to the broader Seizure.
         k = _fake_gene(None, "SCN1A")
-        m = engine._match_feature(None, FOCAL, k)
+        m = engine._match_feature(None, FOCAL, k, 1.0)
         self.assertIsNotNone(m)
         self.assertFalse(m.exact)
         self.assertIn("via broader", m.display)
@@ -100,7 +108,7 @@ class MatchTests(unittest.TestCase):
     @mock.patch.object(engine, "ancestor_ids", _fake_ancestors)
     def test_no_match(self):
         k = _fake_gene(None, "SCN1A")
-        self.assertIsNone(engine._match_feature(None, AORTA, k))
+        self.assertIsNone(engine._match_feature(None, AORTA, k, 1.0))
 
 
 class ScoreTests(unittest.TestCase):
@@ -108,21 +116,42 @@ class ScoreTests(unittest.TestCase):
     def test_partial_score_and_unexplained(self):
         patient = PatientProfile(phenotypes=[SEIZURE, DD, CLEFT])
         k = _fake_gene(None, "SCN1A")  # explains seizure + dd, not cleft
-        fit = engine._score_one(None, ReportedVariant("SCN1A"), patient, k)
+        fit = engine._score_one(None, ReportedVariant("SCN1A"), patient, k, _weights_of(patient))
         self.assertEqual(len(fit.explained), 2)
         self.assertEqual([p.label for p in fit.unexplained], ["Cleft palate"])
-        self.assertAlmostEqual(fit.score, 2 / 3)
+        self.assertAlmostEqual(fit.score, 2 / 3)  # equal weights -> plain fraction
         self.assertEqual(fit.tier, FitTier.POSSIBLE)
+
+    @mock.patch.object(engine, "ancestor_ids", _fake_ancestors)
+    def test_rare_feature_outweighs_common_ones(self):
+        # CLEFT is rare (weight 3), SEIZURE + DD common (weight 1 each). A gene
+        # explaining only the rare feature should outscore one explaining the two
+        # common ones — the whole point of information-content weighting.
+        patient = PatientProfile(phenotypes=[SEIZURE, DD, CLEFT])
+        weights = {"HP:SEIZURE": 1.0, "HP:DD": 1.0, "HP:CLEFT": 3.0}
+
+        # A fake gene annotated only to the rare CLEFT.
+        rare_gene = GenePhenotypeKnowledge(
+            gene="RARE", found=True, diseases=["rare-disease"],
+            phenotype_ids={"HP:CLEFT"}, phenotype_labels={"HP:CLEFT": "Cleft palate"},
+        )
+        common_fit = engine._score_one(None, ReportedVariant("SCN1A"), patient, _fake_gene(None, "SCN1A"), weights)
+        rare_fit = engine._score_one(None, ReportedVariant("RARE"), patient, rare_gene, weights)
+        # common explains 2/5 weight, rare explains 3/5 weight.
+        self.assertAlmostEqual(common_fit.score, 2 / 5)
+        self.assertAlmostEqual(rare_fit.score, 3 / 5)
+        self.assertGreater(rare_fit.score, common_fit.score)
 
     @mock.patch.object(engine, "ancestor_ids", _fake_ancestors)
     def test_missing_knowledge_abstains(self):
         patient = PatientProfile(phenotypes=[SEIZURE])
-        fit = engine._score_one(None, ReportedVariant("EMPTY"), patient, _fake_gene(None, "EMPTY"))
+        fit = engine._score_one(None, ReportedVariant("EMPTY"), patient, _fake_gene(None, "EMPTY"), _weights_of(patient))
         self.assertFalse(fit.knowledge_found)
         self.assertEqual(fit.tier, FitTier.UNLIKELY)
 
 
 class ReviewTests(unittest.TestCase):
+    @mock.patch.object(engine, "ic_weight", _equal_weight)
     @mock.patch.object(engine, "ancestor_ids", _fake_ancestors)
     @mock.patch.object(engine, "fetch_gene_phenotypes", _fake_gene)
     def test_ranking_and_residual(self):
@@ -133,6 +162,7 @@ class ReviewTests(unittest.TestCase):
         # Cleft palate explained by neither gene -> residual.
         self.assertEqual([p.label for p in report.residual_unexplained], ["Cleft palate"])
 
+    @mock.patch.object(engine, "ic_weight", _equal_weight)
     @mock.patch.object(engine, "ancestor_ids", _fake_ancestors)
     @mock.patch.object(engine, "fetch_gene_phenotypes", _fake_gene)
     def test_dual_diagnosis_flag(self):
@@ -141,6 +171,7 @@ class ReviewTests(unittest.TestCase):
         report = engine.review_causality(None, patient, [ReportedVariant("SCN1A"), ReportedVariant("FBN1")])
         self.assertTrue(any("dual diagnosis" in f.lower() for f in report.flags))
 
+    @mock.patch.object(engine, "ic_weight", _equal_weight)
     @mock.patch.object(engine, "ancestor_ids", _fake_ancestors)
     @mock.patch.object(engine, "fetch_gene_phenotypes", _fake_gene)
     def test_ancestor_match_ranks_and_is_broad(self):
