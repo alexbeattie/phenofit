@@ -66,18 +66,62 @@ def _singular(text: str) -> str:
     return text[:-1] if len(text) > 3 and text.endswith("s") else text
 
 
+# Filler words dropped before comparing a query to a term by tokens, so word
+# order and connective words don't matter ("dilatation of the aortic root"
+# matches the synonym "aortic root dilatation").
+_STOPWORDS = {"of", "the", "a", "an", "and", "with", "to", "in", "on", "or"}
+
+# Leading/trailing clinical qualifiers that a report may attach but that are not
+# part of the canonical HPO term name ("recurrent seizures" -> "seizures").
+# Dropped only as a *last resort* when nothing else grounds, and only if the
+# stripped query then yields a confident (name/synonym) hit — so we ground to the
+# correct general term rather than an unrelated top search hit.
+_QUALIFIERS = {
+    "recurrent", "chronic", "acute", "bilateral", "unilateral", "mild",
+    "moderate", "severe", "progressive", "congenital", "intermittent",
+    "episodic", "persistent", "diffuse", "multiple", "frequent", "occasional",
+    "generalized", "generalised",
+}
+
+
+def _tokens(text: str) -> frozenset[str]:
+    """Order- and stopword-insensitive singularized word set for matching."""
+
+    words = re.findall(r"[a-z0-9]+", _norm(text))
+    return frozenset(_singular(w) for w in words if w not in _STOPWORDS)
+
+
+# Match strength buckets, best first. A term matched at any of these is a
+# "strong" (confident) grounding; anything else is a weak fall-back.
+def _match_bucket(term: dict, qn: str, qs: str, qtok: frozenset[str]) -> int | None:
+    name = _norm(term.get("name", ""))
+    if name == qn:
+        return 0                                   # exact name
+    if _singular(name) == qs:
+        return 1                                   # name up to singular/plural
+    syns = [_norm(s) for s in (term.get("synonyms") or [])]
+    if qn in syns:
+        return 2                                   # exact synonym
+    if qtok and _tokens(name) == qtok:
+        return 3                                   # name, ignoring order/fillers
+    if qtok and any(_tokens(s) == qtok for s in syns):
+        return 4                                   # synonym, ignoring order/fillers
+    return None
+
+
 def _rank_terms(terms: list[dict], query: str) -> tuple[dict | None, bool]:
     """Pick the best HPO term for a free-text query.
 
     The Jax search endpoint ranks by its own relevance, which for common terms
     surfaces an over-specific child ("Seizure cluster") above the canonical term
-    ("Seizure"). Grounding a patient's feature to the wrong, narrower term is the
-    quiet-mangle failure this tool exists to avoid, so we prefer a match on the
-    term's own name/synonym over raw search rank.
+    ("Seizure"), or an adjacent term whose name happens to rank higher than the
+    right one ("Aortic arch aneurysm" over "Aortic root aneurysm"). Grounding a
+    patient's feature to the wrong term is the quiet-mangle failure this tool
+    exists to avoid, so we prefer a match on the term's own name/synonym — by
+    exact string, then order-insensitive tokens — over raw search rank.
 
-    Returns (term, strong): `strong` is True when the query matched a term's
-    exact name, its singular/plural form, or one of its synonyms — i.e. a
-    confident grounding rather than a fall-back to the API's top hit.
+    Returns (term, strong): `strong` is True when the query confidently matched a
+    term's name or a synonym, rather than falling back to the API's top hit.
     """
 
     if not terms:
@@ -85,25 +129,25 @@ def _rank_terms(terms: list[dict], query: str) -> tuple[dict | None, bool]:
 
     qn = _norm(query)
     qs = _singular(qn)
-    exact: list[dict] = []
-    normalized: list[dict] = []
-    synonym: list[dict] = []
+    qtok = _tokens(query)
+
+    best_term: dict | None = None
+    best_bucket = 99
     for t in terms:
         if not t.get("id"):
             continue
-        name = _norm(t.get("name", ""))
-        if name == qn:
-            exact.append(t)
-        elif _singular(name) == qs:
-            normalized.append(t)
-        syns = {_norm(s) for s in (t.get("synonyms") or [])}
-        if qn in syns or qs in {_singular(s) for s in syns}:
-            synonym.append(t)
+        bucket = _match_bucket(t, qn, qs, qtok)
+        if bucket is None:
+            continue
+        name_len = len(t.get("name", ""))
+        # Prefer the better bucket; within a bucket the shortest name is the most
+        # canonical/general term.
+        if bucket < best_bucket or (bucket == best_bucket and best_term is not None
+                                    and name_len < len(best_term.get("name", ""))):
+            best_term, best_bucket = t, bucket
 
-    for bucket in (exact, normalized, synonym):
-        if bucket:
-            # Shortest name = the most canonical/general term in the bucket.
-            return min(bucket, key=lambda x: len(x.get("name", ""))), True
+    if best_term is not None:
+        return best_term, True
     return terms[0], False  # fall back to the API's top-ranked result
 
 
@@ -113,6 +157,14 @@ def _search_terms(client: httpx.Client, query: str) -> list[dict]:
     if isinstance(data, dict):
         return data.get("terms") or data.get("results") or []
     return []
+
+
+def _strip_qualifiers(query: str) -> str:
+    """Drop leading/trailing clinical qualifier words ('recurrent seizures')."""
+
+    words = _norm(query).split()
+    core = [w for w in words if _singular(w) not in {_singular(q) for q in _QUALIFIERS}]
+    return " ".join(core)
 
 
 def resolve_term(client: httpx.Client, query: str) -> Phenotype | None:
@@ -127,17 +179,28 @@ def resolve_term(client: httpx.Client, query: str) -> Phenotype | None:
 
     best, strong = _rank_terms(_search_terms(client, q), q)
 
-    # For very common terms the canonical entry can be missing from the first
-    # query's result page (e.g. "Seizure" doesn't surface HP:0001250, but
-    # "Seizures" does). If we only got a weak fall-back, retry once with a
-    # singular/plural variant and take a confident hit if it appears.
+    # If no confident hit, retry with query variants and take a strong match if
+    # one appears. (1) singular/plural: the canonical entry can be missing from
+    # the first page (e.g. "Seizure" doesn't surface for "Seizure" but does for
+    # "Seizures"). (2) qualifier-stripped: a report qualifier like "recurrent"
+    # pulls the whole result set toward other "Recurrent …" terms, so drop it and
+    # search the core phrase.
     if not strong:
         ql = q.lower()
+        retries = []
         alt = _singular(ql) if ql.endswith("s") else q + "s"
         if _norm(alt) != _norm(q):
-            alt_best, alt_strong = _rank_terms(_search_terms(client, alt), q)
+            retries.append(alt)
+        core = _strip_qualifiers(q)
+        if core and _norm(core) != _norm(q):
+            retries.append(core)
+            retries.append(core + "s")
+
+        for alt_q in retries:
+            alt_best, alt_strong = _rank_terms(_search_terms(client, alt_q), alt_q)
             if alt_strong:
-                best = alt_best
+                best, strong = alt_best, True
+                break
 
     if best is None or not best.get("id"):
         return None

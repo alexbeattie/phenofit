@@ -54,6 +54,33 @@ class RankTermsTests(unittest.TestCase):
         self.assertEqual(best["id"], "HP:0002616")
         self.assertTrue(strong)
 
+    def test_order_and_filler_insensitive_synonym_match(self):
+        # Real failure: Claude emits "Dilatation of the aortic root"; the correct
+        # term's synonym is "Aortic root dilatation" (reordered, extra fillers),
+        # and a differently-named "Aortic arch aneurysm" ranks higher.
+        results = [
+            _term("HP:0005113", "Aortic arch aneurysm", synonyms=["Aortic arch dilatation"]),
+            _term("HP:0002616", "Aortic root aneurysm", synonyms=["Aortic root dilatation"]),
+        ]
+        best, strong = hpo._rank_terms(results, "Dilatation of the aortic root")
+        self.assertEqual(best["id"], "HP:0002616")
+        self.assertTrue(strong)
+
+    def test_exact_name_beats_token_synonym_match(self):
+        # Bucket order: an exact name hit must win over a looser token hit.
+        results = [
+            _term("HP:0002616", "Aortic root aneurysm", synonyms=["Aortic root dilatation"]),
+            _term("HP:0001234", "Aortic root dilatation"),  # exact name for the query
+        ]
+        best, strong = hpo._rank_terms(results, "Aortic root dilatation")
+        self.assertEqual(best["id"], "HP:0001234")
+        self.assertTrue(strong)
+
+    def test_qualifier_strip_helper(self):
+        self.assertEqual(hpo._strip_qualifiers("Recurrent seizures"), "seizures")
+        self.assertEqual(hpo._strip_qualifiers("Bilateral ectopia lentis"), "ectopia lentis")
+        self.assertEqual(hpo._strip_qualifiers("Ectopia lentis"), "ectopia lentis")
+
     def test_falls_back_to_top_hit_when_no_name_match(self):
         results = [_term("HP:0033258", "Sudden unexpected death in epilepsy"),
                    _term("HP:0002123", "Generalized myoclonic seizure")]
@@ -65,6 +92,24 @@ class RankTermsTests(unittest.TestCase):
         best, strong = hpo._rank_terms([], "Seizure")
         self.assertIsNone(best)
         self.assertFalse(strong)
+
+
+class ResolveTermRetryTests(unittest.TestCase):
+    def test_qualifier_strip_retry_grounds_correctly(self):
+        # "Recurrent seizures" -> API top hit is the unrelated "Recurrent boils";
+        # stripping "recurrent" and searching "seizures" must recover "Seizure".
+        boils = [_term("HP:5210230", "Recurrent boils"),
+                 _term("HP:0004419", "Recurrent thrombophlebitis")]
+        seizure = [_term("HP:0033349", "Seizure cluster"),
+                   _term("HP:0001250", "Seizure", synonyms=["Seizures"])]
+
+        def fake_search(_client, query):
+            return seizure if "seizure" in query.lower() and "recurrent" not in query.lower() else boils
+
+        with mock.patch.object(hpo, "_search_terms", fake_search):
+            term = hpo.resolve_term(None, "Recurrent seizures")
+        self.assertIsNotNone(term)
+        self.assertEqual(term.hpo_id, "HP:0001250")
 
 
 class InformationContentTests(unittest.TestCase):
