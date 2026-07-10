@@ -149,6 +149,39 @@ class ExplainedMatch:
 
 
 @dataclass
+class OmimPhenotype:
+    """One OMIM disease linked to a gene, with its inheritance pattern."""
+
+    name: str
+    mim: str = ""            # OMIM phenotype MIM number, e.g. "607208"
+    inheritance: str = ""    # e.g. "Autosomal dominant", "Autosomal recessive"
+
+
+@dataclass
+class OmimEvidence:
+    """OMIM corroboration for a gene — a second, curated source of truth.
+
+    `available` is True only when OMIM was actually queried and returned data;
+    otherwise `reason` says why (no key configured, gene not found, error), so the
+    absence is explicit rather than silently blank.
+    """
+
+    gene: str
+    available: bool
+    phenotypes: list[OmimPhenotype] = field(default_factory=list)
+    reason: str = ""
+    source: Optional[Source] = None
+
+    @property
+    def inheritance_patterns(self) -> list[str]:
+        seen: list[str] = []
+        for p in self.phenotypes:
+            if p.inheritance and p.inheritance not in seen:
+                seen.append(p.inheritance)
+        return seen
+
+
+@dataclass
 class VariantFit:
     """How well one reported variant explains the patient."""
 
@@ -161,6 +194,7 @@ class VariantFit:
     rationale: str = ""
     source: Optional[Source] = None
     knowledge_found: bool = True
+    omim: Optional[OmimEvidence] = None  # OMIM corroboration, attached post-ranking
 
 
 @dataclass

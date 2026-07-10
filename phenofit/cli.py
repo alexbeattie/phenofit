@@ -24,6 +24,7 @@ from .hpo import resolve_term
 from .http import get_client
 from .llm import LLMError
 from .models import CausalityReport, PatientProfile, Phenotype, ReportedVariant, parse_variant_spec
+from .omim import corroborate as omim_corroborate, is_configured as omim_configured
 from .variant import Mechanism
 
 # Hardcoded demo: a 4yo with a mixed neuro + connective-tissue picture. The lab
@@ -79,8 +80,17 @@ def _print_report(report: CausalityReport) -> None:
             print(f"       leaves    : {', '.join(ph.label for ph in f.unexplained)}")
         if f.diseases:
             print(f"       disease   : {'; '.join(f.diseases[:3])}")
+        if f.omim and f.omim.available:
+            diseases = "; ".join(p.name for p in f.omim.phenotypes[:2])
+            inh = ", ".join(f.omim.inheritance_patterns) or "inheritance n/a"
+            print(f"       OMIM      : {diseases} [{inh}]")
+            print(f"                   {f.omim.source.url}")
         if f.source:
             print(f"       source    : {f.source.url}")
+
+    if not omim_configured():
+        print("\n  (OMIM corroboration off — set OMIM_API_KEY with a licensed key to "
+              "confirm each gene's disease + inheritance against OMIM.)")
 
     if report.flags:
         print("\n[flags] what the clinician should weigh")
@@ -150,6 +160,7 @@ def main() -> None:
             raise SystemExit(2)
 
         report = review_causality(client, patient, variants)
+        omim_corroborate(client, report.fits)
         _print_report(report)
 
 

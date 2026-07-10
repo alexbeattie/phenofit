@@ -30,6 +30,7 @@ from .hpo import resolve_term
 from .http import get_client
 from .llm import LLMError, is_configured
 from .models import PatientProfile, Phenotype, ReportedVariant, parse_variant_spec
+from .omim import corroborate as omim_corroborate, is_configured as omim_configured
 from .pdf import PdfError, extract_text
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -62,6 +63,7 @@ def _run_review(payload: dict) -> dict:
 
         patient = PatientProfile(phenotypes=phenotypes)
         report = review_causality(client, patient, variants)
+        omim_corroborate(client, report.fits)
 
     return {
         "patient": [{"hpo_id": p.hpo_id, "label": p.label} for p in report.patient.phenotypes],
@@ -94,11 +96,27 @@ def _run_review(payload: dict) -> dict:
                 "diseases": f.diseases[:3],
                 "knowledge_found": f.knowledge_found,
                 "source": f.source.url if f.source else "",
+                "omim": _omim_json(f),
             }
             for i, f in enumerate(report.fits, 1)
         ],
         "residual": [p.label for p in report.residual_unexplained],
         "flags": report.flags,
+        "omim_enabled": omim_configured(),
+    }
+
+
+def _omim_json(fit) -> dict | None:
+    """Serialize a fit's OMIM corroboration, or None when nothing was attached."""
+
+    ev = fit.omim
+    if ev is None or not ev.available:
+        return None
+    return {
+        "diseases": [{"name": p.name, "mim": p.mim, "inheritance": p.inheritance}
+                     for p in ev.phenotypes[:4]],
+        "inheritance": ev.inheritance_patterns,
+        "source": ev.source.url if ev.source else "",
     }
 
 

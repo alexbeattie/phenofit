@@ -243,6 +243,12 @@ function render(data) {
     }
     if (f.diseases.length)
       html += '<div class="row"><span class="k">disease</span><span class="disease">' + f.diseases.join("; ") + '</span></div>';
+    if (f.omim) {
+      const inh = f.omim.inheritance.length ? ' <span class="mech mech-undetermined">' + f.omim.inheritance.join(", ") + '</span>' : '';
+      const dz = f.omim.diseases.map(d => d.name + (d.mim ? ' (MIM ' + d.mim + ')' : '')).join("; ");
+      html += '<div class="row"><span class="k">OMIM</span><span class="disease">' + dz + inh +
+              ' <a class="src" href="' + f.omim.source + '" target="_blank" rel="noopener">&#8599;</a></span></div>';
+    }
     if (!f.knowledge_found)
       html += '<div class="row"><span class="k">note</span><span class="disease">No HPO knowledge retrieved — unscored, not guessed.</span></div>';
     if (f.source)
