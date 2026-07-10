@@ -25,6 +25,7 @@ from .http import get_client
 from .llm import LLMError
 from .models import CausalityReport, PatientProfile, Phenotype, ReportedVariant, parse_variant_spec
 from .omim import corroborate as omim_corroborate, is_configured as omim_configured
+from .trace import build_trace
 from .variant import Mechanism
 
 # Hardcoded demo: a 4yo with a mixed neuro + connective-tissue picture. The lab
@@ -99,6 +100,22 @@ def _print_report(report: CausalityReport) -> None:
     print()
 
 
+def _write_trace(report: CausalityReport, path: str) -> None:
+    """Serialize the decision trace to `path`, or stdout when path is '-'."""
+
+    import json
+    import sys
+
+    blob = json.dumps(build_trace(report), indent=2)
+    if path == "-":
+        print("\n[trace]")
+        print(blob)
+    else:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(blob + "\n")
+        print(f"  (decision trace written to {path})")
+
+
 def _build_patient(client, hpo_args: list[str]) -> list[Phenotype]:
     phenotypes: list[Phenotype] = []
     for raw in hpo_args:
@@ -142,6 +159,10 @@ def main() -> None:
     )
     parser.add_argument("--notes", help="Free-text clinical notes; the AI edge extracts the phenotypes")
     parser.add_argument("--notes-file", help="Path to a file of clinical notes (AI extraction)")
+    parser.add_argument(
+        "--trace", metavar="PATH",
+        help="Write the machine-readable decision trace as JSON (use '-' for stdout)",
+    )
     args = parser.parse_args()
 
     with get_client() as client:
@@ -162,6 +183,8 @@ def main() -> None:
         report = review_causality(client, patient, variants)
         omim_corroborate(client, report.fits)
         _print_report(report)
+        if args.trace:
+            _write_trace(report, args.trace)
 
 
 if __name__ == "__main__":

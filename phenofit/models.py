@@ -207,3 +207,7 @@ class CausalityReport:
     # re-analysis territory.
     residual_unexplained: list[Phenotype] = field(default_factory=list)
     flags: list[str] = field(default_factory=list)
+    # Information-content weight used for each feature (hpo_id -> weight), kept so
+    # the decision trace can show every feature's weight — including the ones no
+    # variant matched, which ExplainedMatch never records.
+    feature_weights: dict[str, float] = field(default_factory=dict)

@@ -31,6 +31,7 @@ from .http import get_client
 from .llm import LLMError, is_configured
 from .models import PatientProfile, Phenotype, ReportedVariant, parse_variant_spec
 from .omim import corroborate as omim_corroborate, is_configured as omim_configured
+from .trace import build_trace
 from .pdf import PdfError, extract_text
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -103,6 +104,7 @@ def _run_review(payload: dict) -> dict:
         "residual": [p.label for p in report.residual_unexplained],
         "flags": report.flags,
         "omim_enabled": omim_configured(),
+        "trace": build_trace(report),
     }
 
 

@@ -186,7 +186,9 @@ def review_causality(
     explained_ids = {m.phenotype.hpo_id for f in fits for m in f.explained}
     residual = [p for p in patient.phenotypes if p.hpo_id not in explained_ids]
 
-    report = CausalityReport(patient=patient, fits=fits, residual_unexplained=residual)
+    report = CausalityReport(
+        patient=patient, fits=fits, residual_unexplained=residual, feature_weights=weights
+    )
     report.flags = _build_flags(fits, residual, len(patient.phenotypes))
     return report
 

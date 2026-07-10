@@ -267,7 +267,24 @@ function render(data) {
     html += '</div>';
   }
 
+  if (data.trace) {
+    html += '<div class="row" style="margin-top:14px"><span class="k">trace</span>' +
+            '<a class="src" id="trace-link" href="#">&#8595; decision trace (JSON) — every match, weight & score contribution</a></div>';
+  }
+
   $("results").innerHTML = html;
+
+  if (data.trace) {
+    $("trace-link").addEventListener("click", (e) => {
+      e.preventDefault();
+      const blob = new Blob([JSON.stringify(data.trace, null, 2)], {type: "application/json"});
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "phenofit-trace.json";
+      a.click();
+      URL.revokeObjectURL(a.href);
+    });
+  }
 }
 
 async function extract() {
