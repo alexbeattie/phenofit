@@ -151,9 +151,31 @@ def _rank_terms(terms: list[dict], query: str) -> tuple[dict | None, bool]:
     return terms[0], False  # fall back to the API's top-ranked result
 
 
+def _clean_query(query: str) -> str:
+    """Sanitize a string before sending it to the Jax search endpoint.
+
+    The endpoint 400s on parentheses, which HPO term *names* routinely carry as
+    disambiguators, e.g. "Febrile seizure (within the age range of 3 months to 6
+    years)". A resolved label gets re-searched when it round-trips through the UI
+    (the features box is filled with labels), so strip parenthetical groups and
+    other punctuation the API rejects. Matching still runs against the caller's
+    original query, so an exact-name hit is unaffected.
+    """
+
+    q = re.sub(r"\([^)]*\)", " ", query)   # drop "(...)" disambiguators
+    q = re.sub(r"[()\[\]{}]", " ", q)       # any stray brackets that remain
+    return re.sub(r"\s+", " ", q).strip()
+
+
 def _search_terms(client: httpx.Client, query: str) -> list[dict]:
-    # `limit` is honored by the API; `max` is silently capped at 10.
-    data = get_json(client, f"{JAX_API}/hp/search", params={"q": query, "limit": "40"})
+    cleaned = _clean_query(query)
+    if not cleaned:
+        return []
+    try:
+        # `limit` is honored by the API; `max` is silently capped at 10.
+        data = get_json(client, f"{JAX_API}/hp/search", params={"q": cleaned, "limit": "40"})
+    except httpx.HTTPStatusError:
+        return []  # a bad query must not crash the whole review
     if isinstance(data, dict):
         return data.get("terms") or data.get("results") or []
     return []

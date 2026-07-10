@@ -94,6 +94,24 @@ class RankTermsTests(unittest.TestCase):
         self.assertFalse(strong)
 
 
+class SearchQuerySanitizeTests(unittest.TestCase):
+    def test_clean_query_strips_parentheticals(self):
+        # HPO names carry "(...)" disambiguators; the Jax search endpoint 400s on
+        # them. A resolved label round-trips through the UI and gets re-searched.
+        self.assertEqual(
+            hpo._clean_query("Febrile seizure (within the age range of 3 months to 6 years)"),
+            "Febrile seizure",
+        )
+        self.assertEqual(hpo._clean_query("Seizure"), "Seizure")
+
+    def test_search_survives_400(self):
+        def _boom(_client, _url, **_kw):
+            import httpx
+            raise httpx.HTTPStatusError("400", request=None, response=None)
+        with mock.patch.object(hpo, "get_json", _boom):
+            self.assertEqual(hpo._search_terms(None, "anything"), [])
+
+
 class ResolveTermRetryTests(unittest.TestCase):
     def test_qualifier_strip_retry_grounds_correctly(self):
         # "Recurrent seizures" -> API top hit is the unrelated "Recurrent boils";
