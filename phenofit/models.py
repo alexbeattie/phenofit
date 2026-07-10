@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Optional
 
+from .variant import VariantConsequence, classify
+
 
 @dataclass
 class Source:
@@ -41,12 +43,45 @@ class ReportedVariant:
 
     gene: str
     hgvs_c: str = ""
+    hgvs_p: str = ""              # protein-level HGVS, e.g. p.Arg1213* (when reported)
     lab_classification: str = ""  # e.g. "Likely pathogenic", "VUS"
     note: str = ""
 
     @property
     def label(self) -> str:
         return f"{self.gene} {self.hgvs_c}".strip()
+
+    @property
+    def consequence(self) -> VariantConsequence:
+        """The variant's molecular consequence, classified from its HGVS notation.
+
+        Protein-level (a nonsense/missense/frameshift call) when the notation
+        supports it; honestly "undetermined" when it doesn't. Never a substitute
+        for the lab's pathogenicity classification — an annotation beside it.
+        """
+        return classify(self.hgvs_c, self.hgvs_p)
+
+
+def parse_variant_spec(spec: str) -> "ReportedVariant | None":
+    """Parse a `GENE[:HGVS[:HGVS]]` spec into a ReportedVariant.
+
+    The HGVS parts may be given in either order; each is routed to the coding or
+    protein field by its `c.`/`p.` prefix, so `SCN1A:c.3637C>T:p.Arg1213*`,
+    `SCN1A:p.Arg1213*`, and `SCN1A:c.3637C>T` all work. Returns None for a blank
+    spec.
+    """
+
+    parts = [p.strip() for p in spec.split(":") if p.strip()]
+    if not parts:
+        return None
+    gene, *hgvs_parts = parts
+    hgvs_c = hgvs_p = ""
+    for part in hgvs_parts:
+        if part.lower().startswith("p."):
+            hgvs_p = part
+        else:
+            hgvs_c = part
+    return ReportedVariant(gene=gene, hgvs_c=hgvs_c, hgvs_p=hgvs_p)
 
 
 @dataclass

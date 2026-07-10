@@ -111,6 +111,29 @@ class SearchQuerySanitizeTests(unittest.TestCase):
         with mock.patch.object(hpo, "get_json", _boom):
             self.assertEqual(hpo._search_terms(None, "anything"), [])
 
+    def test_parenthetical_label_round_trips_to_its_term(self):
+        # The demo failure end to end: a resolved HPO label carrying a "(...)"
+        # disambiguator gets re-searched when it round-trips through the UI. The
+        # cleaned query ("Febrile seizure") is what hits the API, but matching runs
+        # against the ORIGINAL parenthetical string, so the term's own full name is
+        # an exact hit and grounds strongly (not the API's first over-specific hit).
+        full = "Febrile seizure (within the age range of 3 months to 6 years)"
+        api_terms = [
+            _term("HP:0011145", "Generalized-onset motor seizure"),
+            _term("HP:0002373", full),
+        ]
+
+        def fake_get_json(_client, url, **kw):
+            # The real `_search_terms` runs, so this proves the parens were stripped
+            # from the query actually sent to the Jax endpoint (which 400s on them).
+            self.assertNotIn("(", kw.get("params", {}).get("q", ""))
+            return {"terms": api_terms}
+
+        with mock.patch.object(hpo, "get_json", fake_get_json):
+            term = hpo.resolve_term(None, full)
+        self.assertIsNotNone(term)
+        self.assertEqual(term.hpo_id, "HP:0002373")
+
 
 class ResolveTermRetryTests(unittest.TestCase):
     def test_qualifier_strip_retry_grounds_correctly(self):

@@ -23,16 +23,20 @@ from .extract import extract_from_notes
 from .hpo import resolve_term
 from .http import get_client
 from .llm import LLMError
-from .models import CausalityReport, PatientProfile, Phenotype, ReportedVariant
+from .models import CausalityReport, PatientProfile, Phenotype, ReportedVariant, parse_variant_spec
+from .variant import Mechanism
 
 # Hardcoded demo: a 4yo with a mixed neuro + connective-tissue picture. The lab
 # reported three candidates. No single one explains everything — SCN1A covers the
 # seizures/DD/ataxia, FBN1 covers the ectopia lentis/aortic root/tall stature —
 # so the review should flag a possible dual diagnosis.
+# hgvs_p is filled so the demo shows the protein-level axis Matt asked for: the
+# SCN1A change is a nonsense/loss-of-function (the Dravet mechanism), the others
+# missense — a distinction gene-level matching alone is blind to.
 DEMO_VARIANTS = [
-    ReportedVariant("SCN1A", "c.3637C>T", "Pathogenic"),
-    ReportedVariant("FBN1", "c.4082G>A", "Likely pathogenic"),
-    ReportedVariant("MYH7", "c.1063G>A", "VUS"),
+    ReportedVariant("SCN1A", "c.3637C>T", "p.Arg1213*", "Pathogenic"),
+    ReportedVariant("FBN1", "c.4082G>A", "p.Cys1361Tyr", "Likely pathogenic"),
+    ReportedVariant("MYH7", "c.1063G>A", "p.Ala355Thr", "VUS"),
 ]
 DEMO_HPO = [
     Phenotype("HP:0001250", "Seizure"),
@@ -65,6 +69,9 @@ def _print_report(report: CausalityReport) -> None:
         )
         if f.variant.lab_classification:
             print(f"       lab call  : {f.variant.lab_classification}")
+        cons = f.variant.consequence
+        if cons.mechanism is not Mechanism.UNKNOWN:
+            print(f"       variant   : {cons.summary}")
         if f.explained:
             parts = [f"{m.display} [{rarity_tag(m.weight)}]" for m in f.explained]
             print(f"       explains  : {', '.join(parts)}")
@@ -129,10 +136,7 @@ def main() -> None:
 
     with get_client() as client:
         if args.variant and (args.hpo or args.notes or args.notes_file):
-            variants = []
-            for spec in args.variant:
-                gene, _, hgvs = spec.partition(":")
-                variants.append(ReportedVariant(gene=gene.strip(), hgvs_c=hgvs.strip()))
+            variants = [v for v in (parse_variant_spec(s) for s in args.variant) if v]
             phenotypes = _build_patient(client, args.hpo) if args.hpo else []
             phenotypes += _phenotypes_from_notes(client, args)
             patient = PatientProfile(phenotypes=phenotypes)

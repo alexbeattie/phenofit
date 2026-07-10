@@ -29,21 +29,14 @@ from .extract import extract_from_notes, ingest_report
 from .hpo import resolve_term
 from .http import get_client
 from .llm import LLMError, is_configured
-from .models import PatientProfile, Phenotype, ReportedVariant
+from .models import PatientProfile, Phenotype, ReportedVariant, parse_variant_spec
 from .pdf import PdfError, extract_text
 
 STATIC_DIR = Path(__file__).parent / "static"
 
 
 def _parse_variants(raw: list[str]) -> list[ReportedVariant]:
-    variants: list[ReportedVariant] = []
-    for line in raw:
-        line = line.strip()
-        if not line:
-            continue
-        gene, _, hgvs = line.partition(":")
-        variants.append(ReportedVariant(gene=gene.strip(), hgvs_c=hgvs.strip()))
-    return variants
+    return [v for v in (parse_variant_spec(line) for line in raw) if v]
 
 
 def _run_review(payload: dict) -> dict:
@@ -78,6 +71,13 @@ def _run_review(payload: dict) -> dict:
                 "rank": i,
                 "gene": f.variant.gene,
                 "hgvs": f.variant.hgvs_c,
+                "hgvs_p": f.variant.hgvs_p,
+                "consequence": {
+                    "category": f.variant.consequence.category,
+                    "mechanism": f.variant.consequence.mechanism.value,
+                    "confident": f.variant.consequence.confident,
+                    "summary": f.variant.consequence.summary,
+                },
                 "label": f.variant.label,
                 "stars": f.tier.stars,
                 "tier": f.tier.display,
