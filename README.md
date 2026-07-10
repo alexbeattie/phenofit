@@ -42,13 +42,44 @@ Two clinical traps it exists to counter:
 
 ## What it does
 
-Input: the **reported variants** (`GENE` or `GENE:c.HGVS`) and the patient's
-**features** (HPO ids or free text like `"seizures"`). Output: a ranked list, and
-for each variant — the features it **explains** (exactly, or "via broader" through
-the HPO `is_a` graph, each tagged **rare / uncommon / common**), the features it
-**leaves unexplained**, the associated diseases, an **openable HPO source link**,
-and case-level **flags** (strong single fit / possible dual diagnosis / residual
-features nothing explains).
+Input: the **reported variants** (`GENE`, `GENE:c.HGVS`, or
+`GENE:c.HGVS:p.HGVS`) and the patient's **features** (HPO ids or free text like
+`"seizures"`). Output: a ranked list, and for each variant — the features it
+**explains** (exactly, or "via broader" through the HPO `is_a` graph, each tagged
+**rare / uncommon / common**), the features it **leaves unexplained**, the
+variant's **molecular consequence** (see below), **OMIM corroboration** when a key
+is set, the associated diseases, an **openable HPO source link**, and case-level
+**flags** (strong single fit / possible dual diagnosis / residual features nothing
+explains).
+
+### The variant's molecular consequence (the protein-level axis)
+
+A gene-level match is blind to the *kind* of change, which is the other axis a
+clinician weighs. PhenoFit classifies each reported variant's consequence from its
+HGVS — **nonsense / frameshift / canonical-splice / start-loss → loss-of-function**,
+**missense / in-frame indel → altered protein**, **synonymous → silent** — and,
+crucially, **abstains** ("undetermined") on a bare coding substitution like
+`c.3637C>T`, whose protein effect the coding string alone cannot settle. Protein
+notation (`p.Arg1213*`) is used when present because it is precise. This is an
+**annotation shown beside the fit; it never changes the score** — mapping a
+mechanism to a disease's mechanism needs per-gene curation the tool doesn't claim.
+
+### OMIM corroboration (a second source of truth)
+
+With a licensed `OMIM_API_KEY`, each fit is confirmed against OMIM's curated
+gene→disease catalogue, surfacing the **inheritance pattern** (AD / AR / X-linked)
+that governs whether a variant's zygosity even fits — with an openable omim.org
+link. It is **purely corroborative and never reorders the ranking**; with no key
+the layer is inert and the tool runs unchanged.
+
+### Decision trace (show-your-work, for evals / RL)
+
+Every review can emit a machine-readable **decision trace** (`phenofit.trace/v1`):
+for each variant, a row per patient feature recording matched?/exact-or-via-broader/
+weight/**contribution**, whose contributions sum back to the score. Because scoring
+is deterministic, the trace is an exact, replayable account of the reasoning — the
+artifact an eval or RL reward model reads. CLI `--trace`, `/api/review` `trace`
+field (with a UI download link), and `eval --traces` (JSONL) all emit it.
 
 ### How the score works
 
@@ -130,7 +161,10 @@ cp .env.example .env    # then put your key in .env (gitignored)
 ```
 
 A ranking sanity/regression harness: 9 solved cases, each scored against a panel
-of every fixture gene. Current result: **top-1 89%, top-3 100%, MRR 0.926**.
+of every fixture gene. Current result: **top-1 89%, top-3 100%, MRR 0.926, mean
+margin +0.308** (the true gene's score minus the best distractor's — the
+discrimination signal accuracy alone hides). `--traces PATH` also writes each
+case's full decision trace as JSONL.
 
 This is a *ranking + discrimination* check against live HPO data, **not** a
 held-out clinical validation — the phenotypes are curated classic features matched
@@ -145,10 +179,13 @@ other myopathies.
 ./.venv/bin/python -m unittest discover -s tests
 ```
 
-26 offline tests (no network, no key): the scoring engine (matching, tiering,
-explained/unexplained split, ranking, residual, dual-diagnosis, rarity weighting),
-the HPO term ranking + container filtering + information-content weighting, the
-mocked-SDK ingestion edge, and PDF extraction.
+58 offline tests (no network, no key): the scoring engine (matching, tiering,
+explained/unexplained split, ranking, residual, dual-diagnosis, rarity weighting,
+consequence annotation), the HPO term ranking + container filtering +
+information-content weighting + parenthetical round-trip, the molecular-consequence
+classifier (including its abstentions), the OMIM corroboration layer (parse /
+no-key / network-error / gene-absent), the decision-trace builder (shape + numbers
+reconcile), the mocked-SDK ingestion edge, and PDF extraction.
 
 ## Architecture
 
@@ -158,22 +195,30 @@ phenofit/
   http.py       polite HTTP for the HPO API (Retry-After + exponential backoff)
   hpo.py        HPO/Jax client: free-text -> term, gene -> phenotypes, is_a ancestors,
                 information-content (rarity) weight per term
+  variant.py    HGVS -> molecular consequence (nonsense/missense/frameshift/splice…)
+                + loss-of-function vs altered-protein mechanism; abstains when unsure
   engine.py     the reverse match: rarity-weighted score/rank of variants, split
                 explained vs unexplained, residual + dual-diagnosis detection
+  omim.py       OMIM corroboration: gene -> disease + inheritance (needs OMIM_API_KEY),
+                graceful no-key fallback; corroborative only, never reorders
+  trace.py      CausalityReport -> machine-readable decision trace (phenofit.trace/v1)
   llm.py        Claude edge via anthropic SDK structured outputs (Pydantic schemas)
   extract.py    ingestion: Claude proposes -> HPO grounds -> validated terms only
   pdf.py        lab-report PDF -> text (pypdf)
-  cli.py        run a review from the terminal (+ hardcoded demo)
+  cli.py        run a review from the terminal (+ hardcoded demo, --trace)
   webapp.py     stdlib HTTP server + JSON endpoints calling the same engine
   static/       single-page UI (no web framework)
-  eval.py       9-case ranking harness
+  eval.py       9-case ranking harness (top-1/top-3/MRR/margin, --traces)
   samples/      fictional lab-report PDF fixture + its generator
 tests/          offline unit tests
 ```
 
 ## Scope & honesty
 
-PhenoFit is decision-support, not a diagnosis. Scoring now weights features by
-information content (rarity); penetrance and zygosity weighting are the top next
-steps. Text extraction assumes a selectable-text PDF; scanned/image-only reports
-would need OCR (the tool says so rather than guessing).
+PhenoFit is decision-support, not a diagnosis. Scoring weights features by
+information content (rarity); the variant's molecular consequence and OMIM's
+inheritance pattern are now **surfaced beside** the score (not folded into it),
+because turning mechanism/zygosity into a weight responsibly needs per-gene
+curation — the honest next step, not a shortcut to take now. Text extraction
+assumes a selectable-text PDF; scanned/image-only reports would need OCR (the tool
+says so rather than guessing).
