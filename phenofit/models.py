@@ -8,6 +8,7 @@ explains, and which it leaves on the table.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Optional
@@ -65,13 +66,16 @@ class ReportedVariant:
 def parse_variant_spec(spec: str) -> "ReportedVariant | None":
     """Parse a `GENE[:HGVS[:HGVS]]` spec into a ReportedVariant.
 
-    The HGVS parts may be given in either order; each is routed to the coding or
-    protein field by its `c.`/`p.` prefix, so `SCN1A:c.3637C>T:p.Arg1213*`,
-    `SCN1A:p.Arg1213*`, and `SCN1A:c.3637C>T` all work. Returns None for a blank
-    spec.
+    Fields may be separated by colons or whitespace, so `SCN1A:c.3637C>T:p.Arg1213*`
+    and `SCN1A c.3637C>T p.Arg1213*` are equivalent — neither a gene symbol nor an
+    HGVS token contains an inner space, so this is unambiguous, and it keeps a
+    naturally typed `FBN1 c.4082G>A` from reaching the gene-search API as one
+    malformed query. The HGVS parts may be given in either order; each is routed
+    to the coding or protein field by its `c.`/`p.` prefix, so `SCN1A:p.Arg1213*`
+    and `SCN1A:c.3637C>T` also work. Returns None for a blank spec.
     """
 
-    parts = [p.strip() for p in spec.split(":") if p.strip()]
+    parts = [p for p in re.split(r"[:\s]+", spec.strip()) if p]
     if not parts:
         return None
     gene, *hgvs_parts = parts

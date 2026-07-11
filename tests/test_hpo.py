@@ -179,6 +179,26 @@ class InformationContentTests(unittest.TestCase):
             self.assertEqual(hpo.ic_weight(None, "HP:9999999"), 0.25)  # IC 0 -> floor
 
 
+class GeneLookupTests(unittest.TestCase):
+    def test_bad_gene_query_degrades_instead_of_crashing(self):
+        # A malformed symbol (e.g. an unparsed variant spec) 400s the gene-search
+        # endpoint; that must return "no knowledge", not bubble up and abort the
+        # whole review.
+        import httpx
+
+        request = httpx.Request("GET", "https://ontology.jax.org/api/network/search/GENE")
+        response = httpx.Response(400, request=request)
+
+        def _boom(_client, _url, **_kw):
+            raise httpx.HTTPStatusError("400", request=request, response=response)
+
+        with mock.patch.object(hpo, "get_json", _boom):
+            hpo._GENE_CACHE.clear()
+            result = hpo.fetch_gene_phenotypes(None, "FBN1 c.4082G>A")
+        self.assertFalse(result.found)
+        self.assertEqual(result.phenotype_ids, set())
+
+
 class ContainerFilterTests(unittest.TestCase):
     def test_organ_system_containers_excluded(self):
         for name in [
