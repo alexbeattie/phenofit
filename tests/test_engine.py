@@ -143,6 +143,22 @@ class ScoreTests(unittest.TestCase):
         self.assertGreater(rare_fit.score, common_fit.score)
 
     @mock.patch.object(engine, "ancestor_ids", _fake_ancestors)
+    def test_consequence_annotates_rationale_without_changing_score(self):
+        # A nonsense variant and a bare-coding variant in the same gene must score
+        # identically (mechanism never weighs the score), but the rationale should
+        # surface each one's molecular consequence.
+        patient = PatientProfile(phenotypes=[SEIZURE, DD])
+        k = _fake_gene(None, "SCN1A")
+        weights = _weights_of(patient)
+        lof = engine._score_one(
+            None, ReportedVariant("SCN1A", "c.3637C>T", "p.Arg1213*"), patient, k, weights)
+        bare = engine._score_one(
+            None, ReportedVariant("SCN1A", "c.3637C>T"), patient, k, weights)
+        self.assertEqual(lof.score, bare.score)                 # mechanism does not weigh
+        self.assertIn("loss-of-function", lof.rationale.lower())
+        self.assertIn("undetermined", bare.rationale.lower())   # bare c. abstains, honestly
+
+    @mock.patch.object(engine, "ancestor_ids", _fake_ancestors)
     def test_missing_knowledge_abstains(self):
         patient = PatientProfile(phenotypes=[SEIZURE])
         fit = engine._score_one(None, ReportedVariant("EMPTY"), patient, _fake_gene(None, "EMPTY"), _weights_of(patient))

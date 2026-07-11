@@ -26,6 +26,23 @@ from .models import (
     ReportedVariant,
     VariantFit,
 )
+from .variant import Mechanism
+
+
+def _consequence_note(variant: ReportedVariant) -> str:
+    """A one-clause annotation of the variant's molecular consequence, or ''.
+
+    Surfaces the *kind* of change (nonsense/missense/frameshift/…) and its broad
+    mechanism next to the phenotype fit — the clinician's other axis. It never
+    changes the score: mechanism-to-disease compatibility needs per-gene curation
+    we don't claim to have, so this annotates, it doesn't weigh.
+    """
+
+    cons = variant.consequence
+    if cons.mechanism is Mechanism.UNKNOWN:
+        return ""
+    notation = f" {cons.notation}" if cons.notation else ""
+    return f" Variant{notation}: {cons.summary}."
 
 # Fraction of the patient's features a gene must explain to reach each tier.
 _TIER_THRESHOLDS = [
@@ -94,7 +111,10 @@ def _score_one(
             tier=FitTier.UNLIKELY,
             score=0.0,
             unexplained=list(patient.phenotypes),
-            rationale=f"No HPO gene-phenotype knowledge found for {variant.gene}; cannot assess fit.",
+            rationale=(
+                f"No HPO gene-phenotype knowledge found for {variant.gene}; cannot assess fit."
+                + _consequence_note(variant)
+            ),
             source=knowledge.source,
             knowledge_found=False,
         )
@@ -127,6 +147,7 @@ def _score_one(
         rationale += f"; leaves unexplained: {', '.join(p.label for p in unexplained)}."
     else:
         rationale += "; accounts for the full presented picture."
+    rationale += _consequence_note(variant)
 
     return VariantFit(
         variant=variant,
@@ -165,7 +186,9 @@ def review_causality(
     explained_ids = {m.phenotype.hpo_id for f in fits for m in f.explained}
     residual = [p for p in patient.phenotypes if p.hpo_id not in explained_ids]
 
-    report = CausalityReport(patient=patient, fits=fits, residual_unexplained=residual)
+    report = CausalityReport(
+        patient=patient, fits=fits, residual_unexplained=residual, feature_weights=weights
+    )
     report.flags = _build_flags(fits, residual, len(patient.phenotypes))
     return report
 

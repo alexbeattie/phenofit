@@ -23,16 +23,22 @@ from .extract import extract_from_notes
 from .hpo import resolve_term
 from .http import get_client
 from .llm import LLMError
-from .models import CausalityReport, PatientProfile, Phenotype, ReportedVariant
+from .models import CausalityReport, PatientProfile, Phenotype, ReportedVariant, parse_variant_spec
+from .omim import corroborate as omim_corroborate, is_configured as omim_configured
+from .trace import build_trace
+from .variant import Mechanism
 
 # Hardcoded demo: a 4yo with a mixed neuro + connective-tissue picture. The lab
 # reported three candidates. No single one explains everything — SCN1A covers the
 # seizures/DD/ataxia, FBN1 covers the ectopia lentis/aortic root/tall stature —
 # so the review should flag a possible dual diagnosis.
+# hgvs_p is filled so the demo shows the protein-level axis Matt asked for: the
+# SCN1A change is a nonsense/loss-of-function (the Dravet mechanism), the others
+# missense — a distinction gene-level matching alone is blind to.
 DEMO_VARIANTS = [
-    ReportedVariant("SCN1A", "c.3637C>T", "Pathogenic"),
-    ReportedVariant("FBN1", "c.4082G>A", "Likely pathogenic"),
-    ReportedVariant("MYH7", "c.1063G>A", "VUS"),
+    ReportedVariant("SCN1A", "c.3637C>T", "p.Arg1213*", "Pathogenic"),
+    ReportedVariant("FBN1", "c.4082G>A", "p.Cys1361Tyr", "Likely pathogenic"),
+    ReportedVariant("MYH7", "c.1063G>A", "p.Ala355Thr", "VUS"),
 ]
 DEMO_HPO = [
     Phenotype("HP:0001250", "Seizure"),
@@ -65,6 +71,9 @@ def _print_report(report: CausalityReport) -> None:
         )
         if f.variant.lab_classification:
             print(f"       lab call  : {f.variant.lab_classification}")
+        cons = f.variant.consequence
+        if cons.mechanism is not Mechanism.UNKNOWN:
+            print(f"       variant   : {cons.summary}")
         if f.explained:
             parts = [f"{m.display} [{rarity_tag(m.weight)}]" for m in f.explained]
             print(f"       explains  : {', '.join(parts)}")
@@ -72,14 +81,39 @@ def _print_report(report: CausalityReport) -> None:
             print(f"       leaves    : {', '.join(ph.label for ph in f.unexplained)}")
         if f.diseases:
             print(f"       disease   : {'; '.join(f.diseases[:3])}")
+        if f.omim and f.omim.available:
+            diseases = "; ".join(p.name for p in f.omim.phenotypes[:2])
+            inh = ", ".join(f.omim.inheritance_patterns) or "inheritance n/a"
+            print(f"       OMIM      : {diseases} [{inh}]")
+            print(f"                   {f.omim.source.url}")
         if f.source:
             print(f"       source    : {f.source.url}")
+
+    if not omim_configured():
+        print("\n  (OMIM corroboration off — set OMIM_API_KEY with a licensed key to "
+              "confirm each gene's disease + inheritance against OMIM.)")
 
     if report.flags:
         print("\n[flags] what the clinician should weigh")
         for fl in report.flags:
             print(f"  - {fl}")
     print()
+
+
+def _write_trace(report: CausalityReport, path: str) -> None:
+    """Serialize the decision trace to `path`, or stdout when path is '-'."""
+
+    import json
+    import sys
+
+    blob = json.dumps(build_trace(report), indent=2)
+    if path == "-":
+        print("\n[trace]")
+        print(blob)
+    else:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(blob + "\n")
+        print(f"  (decision trace written to {path})")
 
 
 def _build_patient(client, hpo_args: list[str]) -> list[Phenotype]:
@@ -125,14 +159,15 @@ def main() -> None:
     )
     parser.add_argument("--notes", help="Free-text clinical notes; the AI edge extracts the phenotypes")
     parser.add_argument("--notes-file", help="Path to a file of clinical notes (AI extraction)")
+    parser.add_argument(
+        "--trace", metavar="PATH",
+        help="Write the machine-readable decision trace as JSON (use '-' for stdout)",
+    )
     args = parser.parse_args()
 
     with get_client() as client:
         if args.variant and (args.hpo or args.notes or args.notes_file):
-            variants = []
-            for spec in args.variant:
-                gene, _, hgvs = spec.partition(":")
-                variants.append(ReportedVariant(gene=gene.strip(), hgvs_c=hgvs.strip()))
+            variants = [v for v in (parse_variant_spec(s) for s in args.variant) if v]
             phenotypes = _build_patient(client, args.hpo) if args.hpo else []
             phenotypes += _phenotypes_from_notes(client, args)
             patient = PatientProfile(phenotypes=phenotypes)
@@ -146,7 +181,10 @@ def main() -> None:
             raise SystemExit(2)
 
         report = review_causality(client, patient, variants)
+        omim_corroborate(client, report.fits)
         _print_report(report)
+        if args.trace:
+            _write_trace(report, args.trace)
 
 
 if __name__ == "__main__":

@@ -8,9 +8,12 @@ explains, and which it leaves on the table.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Optional
+
+from .variant import VariantConsequence, classify
 
 
 @dataclass
@@ -41,12 +44,48 @@ class ReportedVariant:
 
     gene: str
     hgvs_c: str = ""
+    hgvs_p: str = ""              # protein-level HGVS, e.g. p.Arg1213* (when reported)
     lab_classification: str = ""  # e.g. "Likely pathogenic", "VUS"
     note: str = ""
 
     @property
     def label(self) -> str:
         return f"{self.gene} {self.hgvs_c}".strip()
+
+    @property
+    def consequence(self) -> VariantConsequence:
+        """The variant's molecular consequence, classified from its HGVS notation.
+
+        Protein-level (a nonsense/missense/frameshift call) when the notation
+        supports it; honestly "undetermined" when it doesn't. Never a substitute
+        for the lab's pathogenicity classification — an annotation beside it.
+        """
+        return classify(self.hgvs_c, self.hgvs_p)
+
+
+def parse_variant_spec(spec: str) -> "ReportedVariant | None":
+    """Parse a `GENE[:HGVS[:HGVS]]` spec into a ReportedVariant.
+
+    Fields may be separated by colons or whitespace, so `SCN1A:c.3637C>T:p.Arg1213*`
+    and `SCN1A c.3637C>T p.Arg1213*` are equivalent — neither a gene symbol nor an
+    HGVS token contains an inner space, so this is unambiguous, and it keeps a
+    naturally typed `FBN1 c.4082G>A` from reaching the gene-search API as one
+    malformed query. The HGVS parts may be given in either order; each is routed
+    to the coding or protein field by its `c.`/`p.` prefix, so `SCN1A:p.Arg1213*`
+    and `SCN1A:c.3637C>T` also work. Returns None for a blank spec.
+    """
+
+    parts = [p for p in re.split(r"[:\s]+", spec.strip()) if p]
+    if not parts:
+        return None
+    gene, *hgvs_parts = parts
+    hgvs_c = hgvs_p = ""
+    for part in hgvs_parts:
+        if part.lower().startswith("p."):
+            hgvs_p = part
+        else:
+            hgvs_c = part
+    return ReportedVariant(gene=gene, hgvs_c=hgvs_c, hgvs_p=hgvs_p)
 
 
 @dataclass
@@ -114,6 +153,39 @@ class ExplainedMatch:
 
 
 @dataclass
+class OmimPhenotype:
+    """One OMIM disease linked to a gene, with its inheritance pattern."""
+
+    name: str
+    mim: str = ""            # OMIM phenotype MIM number, e.g. "607208"
+    inheritance: str = ""    # e.g. "Autosomal dominant", "Autosomal recessive"
+
+
+@dataclass
+class OmimEvidence:
+    """OMIM corroboration for a gene — a second, curated source of truth.
+
+    `available` is True only when OMIM was actually queried and returned data;
+    otherwise `reason` says why (no key configured, gene not found, error), so the
+    absence is explicit rather than silently blank.
+    """
+
+    gene: str
+    available: bool
+    phenotypes: list[OmimPhenotype] = field(default_factory=list)
+    reason: str = ""
+    source: Optional[Source] = None
+
+    @property
+    def inheritance_patterns(self) -> list[str]:
+        seen: list[str] = []
+        for p in self.phenotypes:
+            if p.inheritance and p.inheritance not in seen:
+                seen.append(p.inheritance)
+        return seen
+
+
+@dataclass
 class VariantFit:
     """How well one reported variant explains the patient."""
 
@@ -126,6 +198,7 @@ class VariantFit:
     rationale: str = ""
     source: Optional[Source] = None
     knowledge_found: bool = True
+    omim: Optional[OmimEvidence] = None  # OMIM corroboration, attached post-ranking
 
 
 @dataclass
@@ -138,3 +211,7 @@ class CausalityReport:
     # re-analysis territory.
     residual_unexplained: list[Phenotype] = field(default_factory=list)
     flags: list[str] = field(default_factory=list)
+    # Information-content weight used for each feature (hpo_id -> weight), kept so
+    # the decision trace can show every feature's weight — including the ones no
+    # variant matched, which ExplainedMatch never records.
+    feature_weights: dict[str, float] = field(default_factory=dict)

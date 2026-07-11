@@ -1,0 +1,41 @@
+name: Auto-merge
+
+# Solo-repo convenience: when CI passes on a PR into main, squash-merge it
+# automatically — no manual click. You stay in control two ways:
+#   * open the PR as a Draft to hold it, or
+#   * add the `no-automerge` label.
+# Either one is skipped here.
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Squash-merge the PR for this branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          pr=$(gh pr list --head "$BRANCH" --base main --state open \
+                 --json number,isDraft,labels \
+                 --jq '.[] | select(.isDraft == false)
+                            | select([.labels[].name] | index("no-automerge") | not)
+                            | .number' | head -n1)
+          if [ -z "$pr" ]; then
+            echo "No auto-mergeable PR for branch '$BRANCH' (none open, draft, or labelled no-automerge)."
+            exit 0
+          fi
+          echo "Auto-merging PR #$pr"
+          gh pr merge "$pr" --squash --delete-branch

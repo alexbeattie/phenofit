@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from .engine import review_causality
 from .http import get_client
 from .models import PatientProfile, Phenotype, ReportedVariant
+from .trace import build_trace
 
 
 @dataclass
@@ -104,11 +105,28 @@ def _rank_of(fits, gene: str) -> int:
     return len(fits) + 1  # not found -> worse than last
 
 
-def run() -> dict:
+def _separation_margin(fits, true_gene: str) -> float:
+    """Score gap between the true gene and the highest-scoring OTHER gene.
+
+    Positive means the right gene outscores every distractor (and by how much);
+    negative means a distractor beat it. This is the discrimination signal an RL
+    reward or a threshold would key on — accuracy alone hides how *close* the call
+    was. Ranges roughly [-1, 1].
+    """
+
+    true_score = next((f.score for f in fits if f.variant.gene.upper() == true_gene.upper()), 0.0)
+    other_scores = [f.score for f in fits if f.variant.gene.upper() != true_gene.upper()]
+    best_other = max(other_scores) if other_scores else 0.0
+    return true_score - best_other
+
+
+def run(traces_path: str | None = None) -> dict:
     panel = _candidate_panel()
     rows = []
     reciprocal_ranks = []
+    margins = []
     top1 = top3 = 0
+    traces = []
 
     with get_client() as client:
         for case in CASES:
@@ -117,10 +135,14 @@ def run() -> dict:
             report = review_causality(client, patient, variants)
             rank = _rank_of(report.fits, case.true_gene)
             reciprocal_ranks.append(1.0 / rank)
+            margins.append(_separation_margin(report.fits, case.true_gene))
             top1 += rank == 1
             top3 += rank <= 3
             winner = report.fits[0].variant.gene if report.fits else "-"
             rows.append((case.name, case.true_gene, rank, winner))
+            if traces_path:
+                traces.append({"case": case.name, "true_gene": case.true_gene,
+                               "rank": rank, "trace": build_trace(report)})
 
     n = len(CASES)
     summary = {
@@ -128,10 +150,22 @@ def run() -> dict:
         "top1": top1 / n,
         "top3": top3 / n,
         "mrr": sum(reciprocal_ranks) / n,
+        "mean_margin": sum(margins) / n,
         "panel_size": len(panel),
     }
     _print(rows, summary)
+    if traces_path:
+        _write_traces(traces, traces_path)
     return summary
+
+
+def _write_traces(traces: list[dict], path: str) -> None:
+    import json
+
+    with open(path, "w", encoding="utf-8") as fh:
+        for row in traces:
+            fh.write(json.dumps(row) + "\n")
+    print(f"  Wrote {len(traces)} per-case decision traces (JSONL) to {path}\n")
 
 
 def _print(rows, summary) -> None:
@@ -146,8 +180,17 @@ def _print(rows, summary) -> None:
     print(f"  Top-1 accuracy : {summary['top1']:.0%}  (true gene ranked #1)")
     print(f"  Top-3 accuracy : {summary['top3']:.0%}")
     print(f"  Mean recip.rank: {summary['mrr']:.3f}")
+    print(f"  Mean margin    : {summary['mean_margin']:+.3f}  (true-gene score minus best distractor)")
     print()
 
 
 if __name__ == "__main__":
-    run()
+    import argparse
+
+    parser = argparse.ArgumentParser(description="PhenoFit ranking eval.")
+    parser.add_argument(
+        "--traces", metavar="PATH",
+        help="Also write each case's decision trace to a JSONL file (for eval/RL inspection)",
+    )
+    args = parser.parse_args()
+    run(traces_path=args.traces)

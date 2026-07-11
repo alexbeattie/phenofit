@@ -72,6 +72,11 @@
   .rar-rare { background: rgba(255,196,77,.18); color: #ffca66; border: 1px solid rgba(255,196,77,.4); }
   .rar-uncommon { background: rgba(160,160,180,.14); color: #b9b9c9; border: 1px solid rgba(160,160,180,.3); }
   .rar-common { background: rgba(120,120,140,.1); color: #8f8f9f; border: 1px solid rgba(120,120,140,.22); }
+  .mech { display: inline-block; padding: 1px 7px; border-radius: 6px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em; margin-right: 7px; }
+  .mech-loss-of-function { background: rgba(255,107,107,.13); color: var(--bad); border: 1px solid rgba(255,107,107,.32); }
+  .mech-altered-protein { background: rgba(255,196,77,.15); color: #ffca66; border: 1px solid rgba(255,196,77,.35); }
+  .mech-silent { background: rgba(120,120,140,.1); color: #8f8f9f; border: 1px solid rgba(120,120,140,.22); }
+  .mech-undetermined { background: rgba(91,140,255,.1); color: #9db8ff; border: 1px solid rgba(91,140,255,.28); }
   a.src { color: var(--accent); text-decoration: none; font-size: 12px; }
   a.src:hover { text-decoration: underline; }
   .flags { margin-top: 22px; }
@@ -214,6 +219,13 @@ function render(data) {
             ' · ' + f.explained_count + '/' + f.total + pct + '</span>';
     html += '</div>';
 
+    if (f.consequence && f.consequence.mechanism !== 'unknown') {
+      const c = f.consequence;
+      const pnote = f.hgvs_p ? ' <span class="hgvs">' + f.hgvs_p + '</span>' : '';
+      html += '<div class="row"><span class="k">variant</span><span>' +
+              '<span class="mech mech-' + c.mechanism + '">' + c.category + '</span>' +
+              c.summary + pnote + '</span></div>';
+    }
     if (f.explained.length) {
       html += '<div class="row"><span class="k">explains</span><span>';
       for (const m of f.explained) {
@@ -231,6 +243,12 @@ function render(data) {
     }
     if (f.diseases.length)
       html += '<div class="row"><span class="k">disease</span><span class="disease">' + f.diseases.join("; ") + '</span></div>';
+    if (f.omim) {
+      const inh = f.omim.inheritance.length ? ' <span class="mech mech-undetermined">' + f.omim.inheritance.join(", ") + '</span>' : '';
+      const dz = f.omim.diseases.map(d => d.name + (d.mim ? ' (MIM ' + d.mim + ')' : '')).join("; ");
+      html += '<div class="row"><span class="k">OMIM</span><span class="disease">' + dz + inh +
+              ' <a class="src" href="' + f.omim.source + '" target="_blank" rel="noopener">&#8599;</a></span></div>';
+    }
     if (!f.knowledge_found)
       html += '<div class="row"><span class="k">note</span><span class="disease">No HPO knowledge retrieved — unscored, not guessed.</span></div>';
     if (f.source)
@@ -249,7 +267,24 @@ function render(data) {
     html += '</div>';
   }
 
+  if (data.trace) {
+    html += '<div class="row" style="margin-top:14px"><span class="k">trace</span>' +
+            '<a class="src" id="trace-link" href="#">&#8595; decision trace (JSON) — every match, weight & score contribution</a></div>';
+  }
+
   $("results").innerHTML = html;
+
+  if (data.trace) {
+    $("trace-link").addEventListener("click", (e) => {
+      e.preventDefault();
+      const blob = new Blob([JSON.stringify(data.trace, null, 2)], {type: "application/json"});
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "phenofit-trace.json";
+      a.click();
+      URL.revokeObjectURL(a.href);
+    });
+  }
 }
 
 async function extract() {
@@ -303,7 +338,8 @@ async function ingestPdf(file) {
     const data = await resp.json();
     if (data.error) { status.innerHTML = '<span style="color:var(--bad)">' + data.error + '</span>'; return; }
 
-    const vlines = (data.variants || []).map(v => v.hgvs ? (v.gene + ":" + v.hgvs) : v.gene);
+    const vlines = (data.variants || []).map(v =>
+      [v.gene, v.hgvs, v.hgvs_p].filter(Boolean).join(":"));
     if (vlines.length) $("variants").value = vlines.join("\n");
     const labels = (data.phenotypes || []).map(p => p.label);
     if (labels.length) $("features").value = labels.join("\n");

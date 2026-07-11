@@ -111,6 +111,29 @@ class SearchQuerySanitizeTests(unittest.TestCase):
         with mock.patch.object(hpo, "get_json", _boom):
             self.assertEqual(hpo._search_terms(None, "anything"), [])
 
+    def test_parenthetical_label_round_trips_to_its_term(self):
+        # The demo failure end to end: a resolved HPO label carrying a "(...)"
+        # disambiguator gets re-searched when it round-trips through the UI. The
+        # cleaned query ("Febrile seizure") is what hits the API, but matching runs
+        # against the ORIGINAL parenthetical string, so the term's own full name is
+        # an exact hit and grounds strongly (not the API's first over-specific hit).
+        full = "Febrile seizure (within the age range of 3 months to 6 years)"
+        api_terms = [
+            _term("HP:0011145", "Generalized-onset motor seizure"),
+            _term("HP:0002373", full),
+        ]
+
+        def fake_get_json(_client, url, **kw):
+            # The real `_search_terms` runs, so this proves the parens were stripped
+            # from the query actually sent to the Jax endpoint (which 400s on them).
+            self.assertNotIn("(", kw.get("params", {}).get("q", ""))
+            return {"terms": api_terms}
+
+        with mock.patch.object(hpo, "get_json", fake_get_json):
+            term = hpo.resolve_term(None, full)
+        self.assertIsNotNone(term)
+        self.assertEqual(term.hpo_id, "HP:0002373")
+
 
 class ResolveTermRetryTests(unittest.TestCase):
     def test_qualifier_strip_retry_grounds_correctly(self):
@@ -154,6 +177,26 @@ class InformationContentTests(unittest.TestCase):
         with mock.patch.object(hpo, "get_json", _boom):
             hpo._IC_CACHE.clear()
             self.assertEqual(hpo.ic_weight(None, "HP:9999999"), 0.25)  # IC 0 -> floor
+
+
+class GeneLookupTests(unittest.TestCase):
+    def test_bad_gene_query_degrades_instead_of_crashing(self):
+        # A malformed symbol (e.g. an unparsed variant spec) 400s the gene-search
+        # endpoint; that must return "no knowledge", not bubble up and abort the
+        # whole review.
+        import httpx
+
+        request = httpx.Request("GET", "https://ontology.jax.org/api/network/search/GENE")
+        response = httpx.Response(400, request=request)
+
+        def _boom(_client, _url, **_kw):
+            raise httpx.HTTPStatusError("400", request=request, response=response)
+
+        with mock.patch.object(hpo, "get_json", _boom):
+            hpo._GENE_CACHE.clear()
+            result = hpo.fetch_gene_phenotypes(None, "FBN1 c.4082G>A")
+        self.assertFalse(result.found)
+        self.assertEqual(result.phenotype_ids, set())
 
 
 class ContainerFilterTests(unittest.TestCase):

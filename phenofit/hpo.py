@@ -313,7 +313,10 @@ _GENE_CACHE: dict[str, GenePhenotypeKnowledge] = {}
 def _gene_id(client: httpx.Client, gene: str) -> str | None:
     """Map a gene symbol to its NCBIGene id via the network search endpoint."""
 
-    data = get_json(client, f"{JAX_API}/network/search/GENE", params={"q": gene, "limit": "10"})
+    try:
+        data = get_json(client, f"{JAX_API}/network/search/GENE", params={"q": gene, "limit": "10"})
+    except httpx.HTTPStatusError:
+        return None  # a malformed gene symbol degrades to "no knowledge", not a crash
     results = data.get("results", []) if isinstance(data, dict) else []
     for r in results:
         if r.get("name", "").upper() == gene.upper():

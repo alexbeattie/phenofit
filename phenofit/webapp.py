@@ -29,21 +29,16 @@ from .extract import extract_from_notes, ingest_report
 from .hpo import resolve_term
 from .http import get_client
 from .llm import LLMError, is_configured
-from .models import PatientProfile, Phenotype, ReportedVariant
+from .models import PatientProfile, Phenotype, ReportedVariant, parse_variant_spec
+from .omim import corroborate as omim_corroborate, is_configured as omim_configured
+from .trace import build_trace
 from .pdf import PdfError, extract_text
 
 STATIC_DIR = Path(__file__).parent / "static"
 
 
 def _parse_variants(raw: list[str]) -> list[ReportedVariant]:
-    variants: list[ReportedVariant] = []
-    for line in raw:
-        line = line.strip()
-        if not line:
-            continue
-        gene, _, hgvs = line.partition(":")
-        variants.append(ReportedVariant(gene=gene.strip(), hgvs_c=hgvs.strip()))
-    return variants
+    return [v for v in (parse_variant_spec(line) for line in raw) if v]
 
 
 def _run_review(payload: dict) -> dict:
@@ -69,6 +64,7 @@ def _run_review(payload: dict) -> dict:
 
         patient = PatientProfile(phenotypes=phenotypes)
         report = review_causality(client, patient, variants)
+        omim_corroborate(client, report.fits)
 
     return {
         "patient": [{"hpo_id": p.hpo_id, "label": p.label} for p in report.patient.phenotypes],
@@ -78,6 +74,13 @@ def _run_review(payload: dict) -> dict:
                 "rank": i,
                 "gene": f.variant.gene,
                 "hgvs": f.variant.hgvs_c,
+                "hgvs_p": f.variant.hgvs_p,
+                "consequence": {
+                    "category": f.variant.consequence.category,
+                    "mechanism": f.variant.consequence.mechanism.value,
+                    "confident": f.variant.consequence.confident,
+                    "summary": f.variant.consequence.summary,
+                },
                 "label": f.variant.label,
                 "stars": f.tier.stars,
                 "tier": f.tier.display,
@@ -94,11 +97,28 @@ def _run_review(payload: dict) -> dict:
                 "diseases": f.diseases[:3],
                 "knowledge_found": f.knowledge_found,
                 "source": f.source.url if f.source else "",
+                "omim": _omim_json(f),
             }
             for i, f in enumerate(report.fits, 1)
         ],
         "residual": [p.label for p in report.residual_unexplained],
         "flags": report.flags,
+        "omim_enabled": omim_configured(),
+        "trace": build_trace(report),
+    }
+
+
+def _omim_json(fit) -> dict | None:
+    """Serialize a fit's OMIM corroboration, or None when nothing was attached."""
+
+    ev = fit.omim
+    if ev is None or not ev.available:
+        return None
+    return {
+        "diseases": [{"name": p.name, "mim": p.mim, "inheritance": p.inheritance}
+                     for p in ev.phenotypes[:4]],
+        "inheritance": ev.inheritance_patterns,
+        "source": ev.source.url if ev.source else "",
     }
 
 

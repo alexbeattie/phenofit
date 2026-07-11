@@ -41,6 +41,7 @@ class LLMError(RuntimeError):
 class ReportedVariantOut(BaseModel):
     gene: str = Field(description="HGNC gene symbol, e.g. SCN1A")
     hgvs: str = Field(default="", description="coding HGVS such as c.3637C>T, empty if absent")
+    hgvs_p: str = Field(default="", description="protein HGVS such as p.Arg1213* or p.Gly1213Asp, empty if absent")
     classification: str = Field(default="", description="lab's call, e.g. Pathogenic / VUS, empty if absent")
 
 
@@ -70,8 +71,9 @@ _VARIANT_SYSTEM = (
     "Include only variants the lab actually reports for THIS patient; ignore "
     "methodology, references, and genes listed only as panel coverage. For each "
     "variant give the HGNC gene symbol, the coding-level HGVS (e.g. c.3637C>T, "
-    "empty string if absent), and the lab's classification (e.g. Pathogenic, "
-    "Likely pathogenic, VUS; empty string if absent)."
+    "empty string if absent), the protein-level HGVS if the report states it "
+    "(e.g. p.Arg1213* or p.Gly1213Asp; empty string if absent), and the lab's "
+    "classification (e.g. Pathogenic, Likely pathogenic, VUS; empty string if absent)."
 )
 
 
@@ -158,6 +160,7 @@ def extract_variants_raw(report_text: str, *, sdk_client=None) -> list[dict]:
             out.append({
                 "gene": v.gene.strip(),
                 "hgvs": (v.hgvs or "").strip(),
+                "hgvs_p": (v.hgvs_p or "").strip(),
                 "classification": (v.classification or "").strip(),
             })
     return out

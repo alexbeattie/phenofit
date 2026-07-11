@@ -51,7 +51,7 @@ echo "  the reverse match against the live HPO ontology.${RESET}"
 case_run \
   "Dual diagnosis — two independent causes" \
   "No single reported variant explains the whole picture: SCN1A covers the seizures/DD/ataxia, FBN1 covers the ectopia lentis/aortic root/tall stature. PhenoFit ranks both and FLAGS that together they explain it — the ~5% two-diagnoses case a per-variant view can miss." \
-  --variant SCN1A:c.3637C>T --variant FBN1:c.4082G>A --variant MYH7:c.1063G>A \
+  --variant "SCN1A:c.3637C>T:p.Arg1213*" --variant "FBN1:c.4082G>A:p.Cys1361Tyr" --variant "MYH7:c.1063G>A:p.Ala355Thr" \
   --hpo "Seizure" --hpo "Global developmental delay" --hpo "Gait ataxia" \
   --hpo "Ectopia lentis" --hpo "Aortic root dilatation" --hpo "Tall stature" --hpo "Arachnodactyly"
 
@@ -59,14 +59,14 @@ case_run \
 case_run \
   "Clean single fit — the easy, reassuring case" \
   "When one variant really does explain everything, PhenoFit says so plainly (Best fit, full picture) instead of hedging — the mirror image of the hard case." \
-  --variant SCN1A:c.3637C>T --variant MYH7:c.1063G>A \
+  --variant "SCN1A:c.3637C>T:p.Arg1213*" --variant "MYH7:c.1063G>A:p.Ala355Thr" \
   --hpo "Seizure" --hpo "Febrile seizure" --hpo "Global developmental delay" --hpo "Ataxia"
 
 # 3. A residual feature nothing explains -> re-analysis trigger.
 case_run \
   "An orphan feature — the re-analysis trigger" \
   "A feature no reported variant explains isn't a rounding error; it's the signal to consider an unreported extension, a second cause, or a genome re-analysis. PhenoFit surfaces it instead of quietly dropping it." \
-  --variant SCN1A:c.3637C>T \
+  --variant "SCN1A:c.3637C>T:p.Arg1213*" \
   --hpo "Seizure" --hpo "Global developmental delay" --hpo "Ectopia lentis"
 
 echo
