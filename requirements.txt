@@ -2,3 +2,8 @@ httpx==0.27.2          # HPO / Jax ontology API client
 anthropic==0.116.0     # AI edge: lab-report PDF + clinical notes -> structured input
 pypdf==6.14.2          # lab-report PDF -> text for the drag-and-drop
 reportlab==5.0.0       # only to (re)generate the fictional sample lab report
+
+# Optional — Task 3 non-coding/regulatory scoring (AlphaGenome). The tool degrades
+# gracefully without these; install to enable /api/alphagenome.
+alphagenome==0.7.0      # Google DeepMind genome model client (needs ALPHAGENOME_API_KEY)
+pandas==3.0.3           # summarizing AlphaGenome's tidy score frames

@@ -26,8 +26,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from .config import load_dotenv
+from .coords import resolve as resolve_coords
 from .engine import causality_probability, rarity_tag as _rarity_tag, review_causality
 from .extract import extract_from_notes, ingest_documents, ingest_report
+from .noncoding import is_configured as alphagenome_configured, score as score_noncoding
 from .hpo import resolve_term
 from .http import get_client
 from .llm import LLMError, draft_management_brief, is_configured
@@ -302,6 +304,45 @@ def _run_management(payload: dict) -> dict:
     }
 
 
+def _run_alphagenome(payload: dict) -> dict:
+    """Resolve a variant's coordinates and score its non-coding/splicing effect.
+
+    Gene + coding HGVS -> GRCh38 coordinates (Ensembl VEP, free) -> AlphaGenome
+    splicing + regulatory signals. Gated by ALPHAGENOME_API_KEY; abstains with a
+    reason on any failure. Research-model output, surfaced as such.
+    """
+
+    gene = (payload.get("gene") or "").strip()
+    hgvs = (payload.get("hgvs") or "").strip()
+    if not gene:
+        return {"error": "No gene provided."}
+    if not alphagenome_configured():
+        return {"error": "AlphaGenome unavailable (ALPHAGENOME_API_KEY not set)."}
+
+    with get_client() as client:
+        co = resolve_coords(client, gene, hgvs)
+    if not co.resolved:
+        return {"error": f"Could not resolve coordinates via VEP: {co.reason}"}
+
+    res = score_noncoding(co)
+    if not res.available:
+        return {"error": res.reason, "variant_id": res.variant_id}
+
+    def _sig(s):
+        return {"interpretation": s.interpretation, "quantile": s.quantile, "direction": s.direction}
+
+    return {
+        "variant_id": res.variant_id,
+        "consequence": co.consequence,
+        "is_noncoding": co.is_noncoding,
+        "protein_hgvs": co.protein_hgvs,
+        "splicing": [_sig(s) for s in res.splicing],
+        "regulatory": [_sig(s) for s in res.regulatory],
+        "research_use_only": res.research_use_only,
+        "source": res.source.url if res.source else "",
+    }
+
+
 class _Server(ThreadingHTTPServer):
     allow_reuse_address = True  # rebind immediately after a restart
 
@@ -336,7 +377,8 @@ class Handler(BaseHTTPRequestHandler):
             html = (STATIC_DIR / "index.html").read_bytes()
             self._send(200, html, "text/html; charset=utf-8")
         elif self.path == "/api/config":
-            self._send(200, json.dumps({"ai_enabled": is_configured()}).encode(), "application/json")
+            cfg = {"ai_enabled": is_configured(), "alphagenome_enabled": alphagenome_configured()}
+            self._send(200, json.dumps(cfg).encode(), "application/json")
         else:
             self._send(404, b"not found", "text/plain")
 
@@ -349,6 +391,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/ingest-pdf": _run_ingest_pdf,
             "/api/ingest-docs": _run_ingest_docs,
             "/api/management": _run_management,
+            "/api/alphagenome": _run_alphagenome,
         }
         handler = routes.get(self.path)
         if handler is None:

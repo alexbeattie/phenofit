@@ -302,6 +302,13 @@ function render(data) {
       html += '<div class="brief" id="brief-' + idx + '"></div>';
       html += '</div>';
     }
+
+    if (window.__agEnabled) {
+      html += '<div class="mgmt"><span class="mk">non-coding / splicing effect (AlphaGenome)</span><div>';
+      html += '<button class="brief-btn ag-btn" data-idx="' + idx + '" data-gene="' + esc(f.gene) +
+              '" data-hgvs="' + esc(f.hgvs || "") + '">Score with AlphaGenome</button>';
+      html += '<div class="brief" id="ag-' + idx + '"></div></div></div>';
+    }
     html += '</div>';
   });
 
@@ -323,8 +330,10 @@ function render(data) {
 
   $("results").innerHTML = html;
 
-  document.querySelectorAll(".brief-btn").forEach(b => b.addEventListener("click", () =>
+  document.querySelectorAll(".brief-btn:not(.ag-btn)").forEach(b => b.addEventListener("click", () =>
     loadBrief(b.dataset.idx, b.dataset.gene, b.dataset.disease)));
+  document.querySelectorAll(".ag-btn").forEach(b => b.addEventListener("click", () =>
+    loadAlphaGenome(b.dataset.idx, b.dataset.gene, b.dataset.hgvs)));
 
   if (data.trace) {
     $("trace-link").addEventListener("click", (e) => {
@@ -494,7 +503,34 @@ async function loadBrief(idx, gene, disease) {
   }
 }
 
+async function loadAlphaGenome(idx, gene, hgvs) {
+  const box = $("ag-" + idx);
+  box.innerHTML = '<span class="hint">Resolving coordinates (VEP) and scoring (AlphaGenome)… a few seconds.</span>';
+  try {
+    const resp = await fetch("/api/alphagenome", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gene, hgvs })
+    });
+    const d = await resp.json();
+    if (d.error) { box.innerHTML = '<span style="color:var(--bad)">' + esc(d.error) + '</span>'; return; }
+    const grp = (title, items) => items && items.length
+      ? '<div class="grp">' + title + '</div><ul>' + items.map(s => '<li>' + esc(s.interpretation) + '</li>').join("") + '</ul>'
+      : "";
+    let h = '<div class="lbl">AlphaGenome — research model, not clinically validated · ' +
+            esc(d.variant_id) + (d.is_noncoding ? ' · non-coding' : ' · ' + esc(d.consequence || '')) + '</div>';
+    h += grp("Splicing", d.splicing);
+    h += grp("Regulatory", d.regulatory);
+    if (!(d.splicing || []).length && !(d.regulatory || []).length)
+      h += '<span class="hint">No notable splicing or regulatory signal predicted.</span>';
+    if (d.source) h += '<a class="src" href="' + d.source + '" target="_blank" rel="noopener">AlphaGenome &#8599;</a>';
+    box.innerHTML = h;
+  } catch (e) {
+    box.innerHTML = '<span style="color:var(--bad)">Request failed: ' + e + '</span>';
+  }
+}
+
 fetch("/api/config").then(r => r.json()).then(cfg => {
+  window.__agEnabled = !!cfg.alphagenome_enabled;
   if (cfg.ai_enabled) {
     window.__aiEnabled = true;
     $("ai-field").style.display = "block";
