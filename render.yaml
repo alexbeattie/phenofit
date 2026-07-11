@@ -1,0 +1,27 @@
+# Render Blueprint — deploy PhenoFit as an always-on web service from this repo.
+#
+# One-time: in the Render dashboard, New > Blueprint, connect this repo. Render
+# reads this file, builds the Dockerfile, and asks you to fill the three secrets
+# below (they are NOT stored in git). Redeploys automatically on every push to
+# the branch you pick.
+services:
+  - type: web
+    name: phenofit
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /
+    envVars:
+      # Locks the site to one viewer. Set both in the dashboard; APP_PASSWORD is
+      # what you share with Matt (with the username below).
+      - key: APP_USER
+        value: matt
+      - key: APP_PASSWORD
+        sync: false
+      # Enables the AI edge (PDF/notes ingest, management brief). Paste your key
+      # in the dashboard — sync:false keeps it out of the repo.
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      # Optional: OMIM corroboration. Leave unset to skip.
+      - key: OMIM_API_KEY
+        sync: false

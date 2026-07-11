@@ -18,7 +18,9 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import hmac
 import json
+import os
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -36,6 +38,27 @@ from .trace import build_trace
 from .pdf import PdfError, extract_text
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+# Optional HTTP Basic Auth. When APP_PASSWORD is set (production), every request
+# must carry matching Basic credentials; when it's unset (local dev), auth is off
+# and the server behaves exactly as before.
+_AUTH_USER = os.environ.get("APP_USER", "matt")
+_AUTH_PASSWORD = os.environ.get("APP_PASSWORD", "")
+
+
+def _credentials_ok(header: str | None, user: str, password: str) -> bool:
+    """True if an HTTP Basic `Authorization` header matches `user:password`.
+
+    Constant-time comparison so a wrong guess leaks no timing signal.
+    """
+    if not header or not header.startswith("Basic "):
+        return False
+    try:
+        decoded = base64.b64decode(header[6:], validate=True).decode("utf-8", "replace")
+    except (binascii.Error, ValueError):
+        return False
+    got_user, _, got_pass = decoded.partition(":")
+    return hmac.compare_digest(got_user, user) and hmac.compare_digest(got_pass, password)
 
 
 def _parse_variants(raw: list[str]) -> list[ReportedVariant]:
@@ -294,7 +317,21 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _authorized(self) -> bool:
+        """Enforce Basic Auth when APP_PASSWORD is set; send 401 and return False if not."""
+        if not _AUTH_PASSWORD:
+            return True
+        if _credentials_ok(self.headers.get("Authorization"), _AUTH_USER, _AUTH_PASSWORD):
+            return True
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", 'Basic realm="PhenoFit"')
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return False
+
     def do_GET(self) -> None:
+        if not self._authorized():
+            return
         if self.path in ("/", "/index.html"):
             html = (STATIC_DIR / "index.html").read_bytes()
             self._send(200, html, "text/html; charset=utf-8")
@@ -304,6 +341,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, b"not found", "text/plain")
 
     def do_POST(self) -> None:
+        if not self._authorized():
+            return
         routes = {
             "/api/review": _run_review,
             "/api/extract": _run_extract,
@@ -324,13 +363,13 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, json.dumps(result).encode(), "application/json")
 
 
-def _bind(port: int, tries: int = 20) -> _Server:
-    """Bind to `port`, or the next free port if it's already in use."""
+def _bind(host: str, port: int, tries: int = 20) -> _Server:
+    """Bind to `host:port`, or the next free port if it's already in use."""
 
     last: OSError | None = None
     for candidate in range(port, port + tries):
         try:
-            return _Server(("127.0.0.1", candidate), Handler)
+            return _Server((host, candidate), Handler)
         except OSError as exc:
             last = exc
             if candidate == port:
@@ -341,15 +380,21 @@ def _bind(port: int, tries: int = 20) -> _Server:
 def main() -> None:
     load_dotenv()
     parser = argparse.ArgumentParser(description="PhenoFit web UI.")
-    parser.add_argument("--port", type=int, default=8000)
+    # A hosting platform injects $PORT (and we bind $HOST=0.0.0.0); locally these
+    # are unset and the old 127.0.0.1:8000 behavior is preserved.
+    parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
+    parser.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"))
     parser.add_argument("--no-open", action="store_true", help="don't auto-open a browser")
     args = parser.parse_args()
 
-    server = _bind(args.port)
+    # When the platform assigns an exact port, bind it strictly (no fallback
+    # scan) and never try to open a browser.
+    hosted = "PORT" in os.environ
+    server = _bind(args.host, args.port, tries=1 if hosted else 20)
     actual_port = server.server_address[1]
     url = f"http://localhost:{actual_port}"
     print(f"PhenoFit UI running at {url}  (Ctrl-C to stop)")
-    if not args.no_open:
+    if not args.no_open and not hosted:
         try:
             webbrowser.open(url)
         except Exception:
