@@ -89,6 +89,57 @@ class PhenotypeGroundingTests(unittest.TestCase):
         self.assertEqual(len(ingest.phenotypes.phenotypes), 1)
 
 
+class MultiDocumentTests(unittest.TestCase):
+    def test_merge_dedups_by_hpo_id_and_keeps_provenance(self):
+        r1 = extract.ExtractionResult(
+            phenotypes=[extract.ExtractedPhenotype("seizure", SEIZURE, source_doc="lab")],
+            ungrounded=["mystery"],
+        )
+        r2 = extract.ExtractionResult(
+            phenotypes=[
+                extract.ExtractedPhenotype("seizures", SEIZURE, source_doc="neuro note"),  # dup HPO
+                extract.ExtractedPhenotype("ataxia", ATAXIA, source_doc="neuro note"),
+            ],
+            ungrounded=["mystery"],  # dup phrase
+        )
+        merged = extract.merge_extractions([r1, r2])
+
+        self.assertEqual([e.phenotype.hpo_id for e in merged.phenotypes],
+                         ["HP:0001250", "HP:0001251"])
+        # first-seen provenance wins for the duplicated seizure term
+        self.assertEqual(merged.phenotypes[0].source_doc, "lab")
+        self.assertEqual(merged.ungrounded, ["mystery"])
+
+    def test_ingest_documents_routes_roles(self):
+        parsed_variants = VariantExtraction(variants=[
+            ReportedVariantOut(gene="SCN1A", hgvs="c.3637C>T"),
+        ])
+        parsed_phenos = PhenotypeExtraction(phrases=["seizure"])
+
+        class _RoutingMessages:
+            def parse(self, **kwargs):
+                fmt = kwargs.get("output_format")
+                parsed = parsed_variants if fmt is VariantExtraction else parsed_phenos
+                return mock.Mock(parsed_output=parsed)
+
+        class _RoutingClient:
+            messages = _RoutingMessages()
+
+        docs = [
+            {"role": "lab_report", "name": "lab.pdf", "text": "SCN1A pathogenic, seizure"},
+            {"role": "clinical_note", "name": "neuro", "text": "seizure again"},
+        ]
+        with mock.patch.object(extract, "resolve_term",
+                               lambda _c, p: SEIZURE if p == "seizure" else None):
+            ingest = extract.ingest_documents(None, docs, sdk_client=_RoutingClient())
+
+        # variants only from the lab report; phenotype deduped across both docs
+        self.assertEqual([v["gene"] for v in ingest.variants], ["SCN1A"])
+        self.assertEqual(len(ingest.phenotypes.phenotypes), 1)
+        self.assertEqual(ingest.phenotypes.phenotypes[0].source_doc, "lab.pdf")
+        self.assertEqual([d["role"] for d in ingest.docs], ["lab_report", "clinical_note"])
+
+
 class ErrorMappingTests(unittest.TestCase):
     def test_not_configured_without_key(self):
         import os
