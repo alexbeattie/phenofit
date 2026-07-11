@@ -56,6 +56,29 @@ class PhenotypeExtraction(BaseModel):
     )
 
 
+class ManagementBrief(BaseModel):
+    surveillance: list[str] = Field(
+        default_factory=list,
+        description="ongoing monitoring/surveillance recommendations, each one short phrase",
+    )
+    management: list[str] = Field(
+        default_factory=list,
+        description="established management or treatment points, each one short phrase",
+    )
+    systems_to_assess: list[str] = Field(
+        default_factory=list,
+        description="organ systems or specialties the clinical team should evaluate",
+    )
+    confident: bool = Field(
+        default=False,
+        description="true ONLY if this is a well-characterized disorder and the points are well-established",
+    )
+    caveat: str = Field(
+        default="",
+        description="one-line caveat naming what to verify (e.g. the relevant GeneReviews chapter)",
+    )
+
+
 _PHENOTYPE_SYSTEM = (
     "You are a clinical phenotyping assistant. Given free-text clinical content, "
     "extract the patient's OBSERVED phenotypic abnormalities as short, canonical "
@@ -64,6 +87,17 @@ _PHENOTYPE_SYSTEM = (
     "explicitly negated findings, normal findings, family history, and "
     "procedures/medications. Prefer standard terminology (e.g. 'seizure', "
     "'hypertrophic cardiomyopathy', 'global developmental delay')."
+)
+
+_MANAGEMENT_SYSTEM = (
+    "You are a clinical-genetics assistant summarizing the ESTABLISHED clinical "
+    "management of a named genetic disorder for a clinical geneticist, as a draft "
+    "they will verify against GeneReviews. Given a gene and disorder, list only "
+    "well-established surveillance, management, and the organ systems the team "
+    "should assess. Use short phrases. Do NOT invent, speculate, or include "
+    "investigational therapies. If the disorder is not well-characterized, or you "
+    "are not confident the points are well-established, set confident=false and "
+    "leave the lists empty. Always fill 'caveat' with what to verify."
 )
 
 _VARIANT_SYSTEM = (
@@ -148,6 +182,18 @@ def extract_phenotype_phrases(notes: str, *, sdk_client=None) -> list[str]:
 
     result = _parse(_PHENOTYPE_SYSTEM, notes, PhenotypeExtraction, sdk_client=sdk_client)
     return [p.strip() for p in result.phrases if p and p.strip()]
+
+
+def draft_management_brief(gene: str, disease: str, *, sdk_client=None) -> "ManagementBrief":
+    """Ask Claude for a concise, verifiable management brief for a gene/disorder.
+
+    Fenced to the ingestion edge like everything else: this is a labeled DRAFT to
+    be checked against the curated links, never a scored clinical call. The model
+    is instructed to abstain (confident=False, empty lists) when unsure.
+    """
+
+    user = f"Gene: {gene}\nDisorder: {disease or gene + '-related disorder'}"
+    return _parse(_MANAGEMENT_SYSTEM, user, ManagementBrief, sdk_client=sdk_client)
 
 
 def extract_variants_raw(report_text: str, *, sdk_client=None) -> list[dict]:

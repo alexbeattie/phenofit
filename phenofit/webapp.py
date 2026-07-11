@@ -25,10 +25,11 @@ from pathlib import Path
 
 from .config import load_dotenv
 from .engine import rarity_tag as _rarity_tag, review_causality
-from .extract import extract_from_notes, ingest_report
+from .extract import extract_from_notes, ingest_documents, ingest_report
 from .hpo import resolve_term
 from .http import get_client
-from .llm import LLMError, is_configured
+from .llm import LLMError, draft_management_brief, is_configured
+from .management import curated_links
 from .models import PatientProfile, Phenotype, ReportedVariant, parse_variant_spec
 from .omim import corroborate as omim_corroborate, is_configured as omim_configured
 from .trace import build_trace
@@ -98,6 +99,11 @@ def _run_review(payload: dict) -> dict:
                 "knowledge_found": f.knowledge_found,
                 "source": f.source.url if f.source else "",
                 "omim": _omim_json(f),
+                "management_links": [
+                    {"name": s.name, "url": s.url, "detail": s.detail}
+                    for s in curated_links(f.variant.gene, _first_omim_mim(f))
+                ],
+                "top_disease": _top_disease(f),
             }
             for i, f in enumerate(report.fits, 1)
         ],
@@ -120,6 +126,27 @@ def _omim_json(fit) -> dict | None:
         "inheritance": ev.inheritance_patterns,
         "source": ev.source.url if ev.source else "",
     }
+
+
+def _first_omim_mim(fit) -> str | None:
+    """The first OMIM phenotype MIM for a fit's gene, to deep-link its OMIM entry."""
+
+    ev = fit.omim
+    if ev is None or not ev.available:
+        return None
+    for p in ev.phenotypes:
+        if p.mim:
+            return p.mim
+    return None
+
+
+def _top_disease(fit) -> str:
+    """The best single disease label to hand the management brief (OMIM, then HPO)."""
+
+    ev = fit.omim
+    if ev is not None and ev.available and ev.phenotypes:
+        return ev.phenotypes[0].name
+    return fit.diseases[0] if fit.diseases else ""
 
 
 def _run_extract(payload: dict) -> dict:
@@ -175,6 +202,82 @@ def _run_ingest_pdf(payload: dict) -> dict:
     }
 
 
+def _run_ingest_docs(payload: dict) -> dict:
+    """Several dropped/pasted clinical documents -> merged variants + phenotypes.
+
+    `documents` is a list of {role, kind, content, name}: kind "pdf" carries
+    base64, kind "text" carries raw text. Lab reports yield variants; every
+    document yields phenotypes, merged and deduped across the set.
+    """
+
+    raw_docs = payload.get("documents") or []
+    if not raw_docs:
+        return {"error": "No documents provided."}
+
+    prepared: list[dict] = []
+    for i, d in enumerate(raw_docs):
+        name = d.get("name") or f"document {i + 1}"
+        role = d.get("role") or "clinical_note"
+        kind = d.get("kind") or "text"
+        if kind == "pdf":
+            try:
+                data = base64.b64decode(d.get("content") or "", validate=True)
+            except (binascii.Error, ValueError):
+                return {"error": f"{name}: PDF data was not valid base64."}
+            try:
+                text = extract_text(data)
+            except PdfError as exc:
+                return {"error": f"{name}: {exc}"}
+        else:
+            text = d.get("content") or ""
+        prepared.append({"role": role, "name": name, "text": text})
+
+    with get_client() as client:
+        try:
+            ingest = ingest_documents(client, prepared)
+        except LLMError as exc:
+            return {"error": str(exc)}
+
+    return {
+        "variants": ingest.variants,
+        "phenotypes": [
+            {"phrase": e.phrase, "hpo_id": e.phenotype.hpo_id,
+             "label": e.phenotype.label, "source_doc": e.source_doc}
+            for e in ingest.phenotypes.phenotypes
+        ],
+        "ungrounded": ingest.phenotypes.ungrounded,
+        "docs": ingest.docs,
+    }
+
+
+def _run_management(payload: dict) -> dict:
+    """AI-drafted, verify-against-source management brief for a gene/disorder.
+
+    Gated by the API key (curated links carry the load without it); the model is
+    instructed to abstain when unsure, surfaced here as confident=False.
+    """
+
+    gene = (payload.get("gene") or "").strip()
+    disease = (payload.get("disease") or "").strip()
+    if not gene:
+        return {"error": "No gene provided."}
+    if not is_configured():
+        return {"error": "AI brief unavailable (ANTHROPIC_API_KEY not set). Use the curated links."}
+    try:
+        brief = draft_management_brief(gene, disease)
+    except LLMError as exc:
+        return {"error": str(exc)}
+    return {
+        "gene": gene,
+        "disease": disease,
+        "confident": brief.confident,
+        "surveillance": brief.surveillance,
+        "management": brief.management,
+        "systems_to_assess": brief.systems_to_assess,
+        "caveat": brief.caveat,
+    }
+
+
 class _Server(ThreadingHTTPServer):
     allow_reuse_address = True  # rebind immediately after a restart
 
@@ -204,6 +307,8 @@ class Handler(BaseHTTPRequestHandler):
             "/api/review": _run_review,
             "/api/extract": _run_extract,
             "/api/ingest-pdf": _run_ingest_pdf,
+            "/api/ingest-docs": _run_ingest_docs,
+            "/api/management": _run_management,
         }
         handler = routes.get(self.path)
         if handler is None:

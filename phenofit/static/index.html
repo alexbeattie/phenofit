@@ -101,6 +101,29 @@
   .drop .big { display: block; font-weight: 700; color: var(--ink); margin-bottom: 3px; font-size: 13.5px; }
   .drop .sub { font-size: 12px; }
   #drop-status { margin-top: 6px; font-size: 12px; }
+  .doc-list { margin: 8px 0 0; display: flex; flex-direction: column; gap: 6px; }
+  .doc-row { display: flex; align-items: center; gap: 8px; background: var(--panel2);
+    border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font-size: 12.5px; }
+  .doc-row .nm { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .doc-row select { width: auto; background: var(--bg); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 6px; font-size: 12px; padding: 3px 4px; font-weight: 400; }
+  .doc-row .rm { width: auto; background: transparent; border: 0; color: var(--muted); cursor: pointer;
+    padding: 0 4px; font-size: 15px; }
+  .doc-row .rm:hover { color: var(--bad); }
+  .mgmt { margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line); }
+  .mgmt .mk { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+  .mgmt-links { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+  .mgmt-links a { background: var(--panel2); border: 1px solid var(--line); border-radius: 999px;
+    padding: 3px 10px; font-size: 12px; color: var(--accent); text-decoration: none; }
+  .mgmt-links a:hover { border-color: var(--accent); }
+  .brief-btn { width: auto; padding: 6px 12px; font-size: 12.5px; background: var(--panel2);
+    border: 1px solid var(--line); color: var(--ink); }
+  .brief-btn:hover { border-color: var(--accent); }
+  .brief { margin-top: 8px; font-size: 12.5px; }
+  .brief .lbl { color: var(--warn); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; }
+  .brief ul { margin: 4px 0 8px; padding-left: 18px; }
+  .brief li { margin: 2px 0; }
+  .brief .grp { color: var(--muted); font-weight: 700; font-size: 11px; text-transform: uppercase; margin-top: 6px; }
 </style>
 </head>
 <body>
@@ -112,12 +135,14 @@
 <div class="wrap">
   <section class="inputs">
     <div class="field" id="pdf-field" style="display:none">
-      <label>Lab report <span class="hint">— drop a PDF; Claude fills variants + features</span></label>
+      <label>Clinical documents <span class="hint">— drop the lab-report PDF + any other notes; Claude reads them all</span></label>
       <div id="drop" class="drop">
-        <span class="big">Drop a lab-report PDF here</span>
-        <span class="sub">or click to choose a file</span>
+        <span class="big">Drop PDFs here</span>
+        <span class="sub">or click to choose files — the lab report and any clinical notes</span>
       </div>
-      <input id="pdf-input" type="file" accept="application/pdf,.pdf" style="display:none" />
+      <input id="pdf-input" type="file" accept="application/pdf,.pdf" multiple style="display:none" />
+      <div id="doc-list" class="doc-list"></div>
+      <button id="ingest-all" class="secondary" style="margin-top:8px;display:none">Ingest all documents</button>
       <div id="drop-status" class="hint"></div>
     </div>
     <div class="field">
@@ -253,6 +278,19 @@ function render(data) {
       html += '<div class="row"><span class="k">note</span><span class="disease">No HPO knowledge retrieved — unscored, not guessed.</span></div>';
     if (f.source)
       html += '<div class="row"><span class="k">source</span><a class="src" href="' + f.source + '" target="_blank" rel="noopener">HPO annotation &#8599;</a></div>';
+
+    if (f.management_links && f.management_links.length) {
+      html += '<div class="mgmt"><span class="mk">management &amp; what to assess</span>';
+      html += '<div class="mgmt-links">';
+      for (const l of f.management_links)
+        html += '<a href="' + l.url + '" target="_blank" rel="noopener" title="' + esc(l.detail || "") + '">' + esc(l.name) + ' &#8599;</a>';
+      html += '</div>';
+      if (window.__aiEnabled)
+        html += '<button class="brief-btn" data-idx="' + idx + '" data-gene="' + esc(f.gene) +
+                '" data-disease="' + esc(f.top_disease || "") + '">Draft management brief (AI)</button>';
+      html += '<div class="brief" id="brief-' + idx + '"></div>';
+      html += '</div>';
+    }
     html += '</div>';
   });
 
@@ -273,6 +311,9 @@ function render(data) {
   }
 
   $("results").innerHTML = html;
+
+  document.querySelectorAll(".brief-btn").forEach(b => b.addEventListener("click", () =>
+    loadBrief(b.dataset.idx, b.dataset.gene, b.dataset.disease)));
 
   if (data.trace) {
     $("trace-link").addEventListener("click", (e) => {
@@ -312,6 +353,11 @@ async function extract() {
   }
 }
 
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g,
+    c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
 function fileToBase64(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -321,54 +367,125 @@ function fileToBase64(file) {
   });
 }
 
-async function ingestPdf(file) {
+// ---- multi-document ingestion ----
+let docQueue = [];  // {name, file}
+
+function renderDocList() {
+  const list = $("doc-list");
+  list.innerHTML = "";
+  docQueue.forEach((d, i) => {
+    const role = i === 0 ? "lab_report" : "clinical_note";  // first drop defaults to the lab report
+    const row = document.createElement("div");
+    row.className = "doc-row";
+    row.innerHTML =
+      '<span class="nm" title="' + esc(d.name) + '">' + esc(d.name) + '</span>' +
+      '<select data-i="' + i + '">' +
+        '<option value="lab_report"' + (role === "lab_report" ? " selected" : "") + '>Lab report</option>' +
+        '<option value="clinical_note"' + (role === "clinical_note" ? " selected" : "") + '>Clinical note</option>' +
+      '</select>' +
+      '<button class="rm" data-i="' + i + '" title="Remove">&times;</button>';
+    list.appendChild(row);
+  });
+  list.querySelectorAll(".rm").forEach(b => b.addEventListener("click", () => {
+    docQueue.splice(parseInt(b.dataset.i, 10), 1);
+    renderDocList();
+  }));
+  $("ingest-all").style.display = docQueue.length ? "inline-block" : "none";
+}
+
+function queueFiles(files) {
+  for (const f of files)
+    if (f.type === "application/pdf" || /\.pdf$/i.test(f.name)) docQueue.push({ name: f.name, file: f });
+  renderDocList();
+}
+
+async function ingestAll() {
   const status = $("drop-status");
-  if (!file) return;
-  if (file.type && file.type !== "application/pdf" && !/\.pdf$/i.test(file.name)) {
-    status.innerHTML = '<span style="color:var(--bad)">That is not a PDF.</span>';
-    return;
+  const roles = Array.from($("doc-list").querySelectorAll("select")).map(s => s.value);
+  const documents = [];
+  for (let i = 0; i < docQueue.length; i++) {
+    const content = await fileToBase64(docQueue[i].file);
+    documents.push({ role: roles[i] || "clinical_note", kind: "pdf", name: docQueue[i].name, content });
   }
-  status.textContent = "Reading “" + file.name + "”, then asking Claude + grounding in HPO…";
+  const notes = $("notes") ? $("notes").value.trim() : "";  // fold the typed notes box in as a document
+  if (notes) documents.push({ role: "clinical_note", kind: "text", name: "typed notes", content: notes });
+  if (!documents.length) { status.textContent = "Add at least one PDF, or type clinical notes."; return; }
+
+  $("ingest-all").disabled = true;
+  status.textContent = "Reading " + documents.length + " document(s), asking Claude + grounding in HPO…";
   try {
-    const pdf_base64 = await fileToBase64(file);
-    const resp = await fetch("/api/ingest-pdf", {
-      method: "POST", headers: {"Content-Type": "application/json"},
-      body: JSON.stringify({pdf_base64})
+    const resp = await fetch("/api/ingest-docs", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ documents })
     });
     const data = await resp.json();
     if (data.error) { status.innerHTML = '<span style="color:var(--bad)">' + data.error + '</span>'; return; }
 
-    const vlines = (data.variants || []).map(v =>
-      [v.gene, v.hgvs, v.hgvs_p].filter(Boolean).join(":"));
+    const vlines = (data.variants || []).map(v => [v.gene, v.hgvs, v.hgvs_p].filter(Boolean).join(":"));
     if (vlines.length) $("variants").value = vlines.join("\n");
     const labels = (data.phenotypes || []).map(p => p.label);
     if (labels.length) $("features").value = labels.join("\n");
 
-    let msg = "Found " + vlines.length + " variant(s) and " + labels.length + " HPO term(s). Review/edit, then run.";
+    const nd = (data.docs || []).length;
+    let msg = "Found " + vlines.length + " variant(s) and " + labels.length +
+              " feature(s) across " + nd + " document(s). Review/edit, then run.";
     if (data.ungrounded && data.ungrounded.length)
       msg += " Not grounded in HPO: " + data.ungrounded.join(", ") + ".";
     status.innerHTML = '<span style="color:var(--good)">' + msg + '</span>';
   } catch (e) {
     status.innerHTML = '<span style="color:var(--bad)">Request failed: ' + e + '</span>';
+  } finally {
+    $("ingest-all").disabled = false;
   }
 }
 
 function wireDropzone() {
   const drop = $("drop"), input = $("pdf-input");
   drop.addEventListener("click", () => input.click());
-  input.addEventListener("change", () => ingestPdf(input.files[0]));
+  input.addEventListener("change", () => queueFiles(input.files));
   ["dragenter", "dragover"].forEach(ev =>
     drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
   ["dragleave", "dragend", "drop"].forEach(ev =>
     drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove("over"); }));
   drop.addEventListener("drop", (e) => {
-    const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-    ingestPdf(file);
+    if (e.dataTransfer && e.dataTransfer.files) queueFiles(e.dataTransfer.files);
   });
+  $("ingest-all").addEventListener("click", ingestAll);
+}
+
+// ---- AI-drafted management brief (lazy, per disorder) ----
+async function loadBrief(idx, gene, disease) {
+  const box = $("brief-" + idx);
+  box.innerHTML = '<span class="hint">Drafting from public knowledge…</span>';
+  try {
+    const resp = await fetch("/api/management", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gene, disease })
+    });
+    const d = await resp.json();
+    if (d.error) { box.innerHTML = '<span style="color:var(--bad)">' + esc(d.error) + '</span>'; return; }
+    if (!d.confident) {
+      box.innerHTML = '<div class="lbl">AI-drafted · abstained</div><span class="disease">' +
+        'Not confidently characterized — consult GeneReviews. ' + esc(d.caveat || "") + '</span>';
+      return;
+    }
+    const grp = (title, items) => items && items.length
+      ? '<div class="grp">' + title + '</div><ul>' + items.map(x => '<li>' + esc(x) + '</li>').join("") + '</ul>'
+      : "";
+    let h = '<div class="lbl">AI-drafted from public knowledge — verify against GeneReviews</div>';
+    h += grp("Surveillance", d.surveillance);
+    h += grp("Management", d.management);
+    h += grp("Assess", d.systems_to_assess);
+    if (d.caveat) h += '<span class="hint">' + esc(d.caveat) + '</span>';
+    box.innerHTML = h;
+  } catch (e) {
+    box.innerHTML = '<span style="color:var(--bad)">Request failed: ' + e + '</span>';
+  }
 }
 
 fetch("/api/config").then(r => r.json()).then(cfg => {
   if (cfg.ai_enabled) {
+    window.__aiEnabled = true;
     $("ai-field").style.display = "block";
     $("pdf-field").style.display = "block";
     wireDropzone();
