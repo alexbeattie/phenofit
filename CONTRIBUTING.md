@@ -31,7 +31,11 @@ Work in small, self-contained increments. Each change follows the same steps:
 6. **Commit.** The pre-commit hook re-runs the suite and blocks a red commit.
    Keep the subject imperative and under ~72 chars; explain the *why* in the body.
 7. **Open a PR** to `main`. CI (`.github/workflows/ci.yml`) runs the suite on
-   every push and PR; nothing merges red.
+   every push and PR; nothing merges red. When CI passes, the PR is
+   **squash-merged automatically** (`.github/workflows/automerge.yml`) — this is
+   a solo repo, so a manual second click adds nothing. To hold a PR back for
+   review, open it as a **Draft** or add the **`no-automerge`** label; either
+   one is skipped by the auto-merge job.
 
 ## Conventions
 
