@@ -249,6 +249,12 @@ function render(data) {
             ' · ' + f.explained_count + '/' + f.total + pct + '</span>';
     html += '</div>';
 
+    if (f.causality_probability != null) {
+      html += '<div class="row"><span class="k">causality</span><span>' +
+              '<b style="color:' + tierColor(f.tier_level) + '">' + Math.round(f.causality_probability * 100) + '%</b>' +
+              ' <span class="hint">provisional estimate — heuristic, not outcome-trained</span></span></div>';
+    }
+
     if (f.consequence && f.consequence.mechanism !== 'unknown') {
       const c = f.consequence;
       const pnote = f.hgvs_p ? ' <span class="hgvs">' + f.hgvs_p + '</span>' : '';

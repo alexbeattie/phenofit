@@ -77,6 +77,60 @@ def rarity_tag(weight: float) -> str:
     return "common"
 
 
+def _consequence_confidence(fit: VariantFit) -> float:
+    """How much the variant's molecular consequence supports a causal role, 0-1."""
+
+    c = fit.variant.consequence
+    if c.mechanism is Mechanism.LOSS_OF_FUNCTION:
+        return 1.0 if c.confident else 0.8
+    if c.mechanism is Mechanism.ALTERED_PROTEIN:
+        return 0.75
+    if c.mechanism is Mechanism.SILENT:
+        return 0.25
+    return 0.5  # UNDETERMINED / UNKNOWN — neutral; we don't claim to know
+
+
+def _classification_prior(lab_classification: str) -> float:
+    """Turn the lab's own call into a 0-1 prior (empty/unknown -> neutral 0.5)."""
+
+    s = (lab_classification or "").strip().lower()
+    if not s:
+        return 0.5
+    if "benign" in s:
+        return 0.15 if "likely" in s else 0.1
+    if "pathogenic" in s:
+        return 0.85 if "likely" in s else 1.0
+    if "uncertain" in s or "vus" in s:
+        return 0.4
+    return 0.5
+
+
+def causality_probability(fit: VariantFit) -> float | None:
+    """Provisional 0-1 estimate that this variant causes the patient's picture.
+
+    HEURISTIC, not outcome-trained. Bounded by the rarity-weighted phenotype fit
+    (causality requires the phenotype to actually fit), then scaled within
+    [0.7, 1.0] by corroborating evidence: how *exact* the phenotype matches are,
+    the molecular consequence, the lab's own classification, and whether OMIM
+    corroborates the gene-disease link. Returns None when gene knowledge is absent
+    (abstain, never guess) — the same contract the score follows. Matt asked for a
+    0-1 causality number; this is the honest interim until labeled pathogenic
+    variant->disease cases let us train and calibrate a real one.
+    """
+
+    if not fit.knowledge_found:
+        return None
+    signals: list[float] = []
+    if fit.explained:  # fraction of matches that are exact (vs broadened ancestors)
+        signals.append(sum(1 for m in fit.explained if m.exact) / len(fit.explained))
+    signals.append(_consequence_confidence(fit))
+    signals.append(_classification_prior(fit.variant.lab_classification))
+    if fit.omim is not None and getattr(fit.omim, "available", False):
+        signals.append(1.0)  # curated corroboration only adds, never penalizes
+    evidence = sum(signals) / len(signals) if signals else 0.5
+    return round(fit.score * (0.7 + 0.3 * evidence), 3)
+
+
 def _match_feature(
     client: httpx.Client, feature: Phenotype, knowledge: GenePhenotypeKnowledge, weight: float
 ) -> ExplainedMatch | None:
