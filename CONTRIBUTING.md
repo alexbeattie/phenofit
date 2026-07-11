@@ -37,6 +37,20 @@ Work in small, self-contained increments. Each change follows the same steps:
    review, open it as a **Draft** or add the **`no-automerge`** label; either
    one is skipped by the auto-merge job.
 
+## Back to baseline
+
+After a PR auto-merges, return this clone to a clean, up-to-date `main` before
+starting the next change:
+
+```bash
+scripts/baseline
+```
+
+It fetches, fast-forwards `main`, and deletes local branches whose remote was
+pruned (auto-merge deletes the branch on merge). It **refuses to run over a dirty
+tree** — commit your work or park it on a `wip/<slug>` branch first; the script
+never discards uncommitted changes.
+
 ## Conventions
 
 - **Provenance is a feature.** Every claim carries its source; never surface a
