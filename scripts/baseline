@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+#
+# baseline — return this clone to a clean, up-to-date main.
+#
+# Use after a PR auto-merges (or any time you want a fresh start): it fetches,
+# fast-forwards main, and deletes local branches whose remote was pruned (which
+# is what auto-merge's --delete-branch leaves behind). It NEVER discards
+# uncommitted work — if the tree is dirty it stops and tells you, so you decide
+# where that work goes.
+#
+#   scripts/baseline
+#
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+# 1. Refuse to run over uncommitted work — preserving it is your call, not this
+#    script's. (See CONTRIBUTING: commit it, or park it on a wip/ branch.)
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "baseline: working tree is dirty — not touching it." >&2
+  echo "Commit or park your changes first (e.g. git switch -c wip/<slug> && git add -A && git commit)." >&2
+  git status --short >&2
+  exit 1
+fi
+
+# 2. Detect the default branch instead of hardcoding it.
+base="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@' || true)"
+if [[ -z "$base" ]]; then
+  git remote set-head origin -a >/dev/null 2>&1 || true
+  base="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's@^origin/@@' || echo main)"
+fi
+
+echo "baseline: fetching and pruning..."
+git fetch --prune origin
+
+echo "baseline: switching to '$base' and fast-forwarding..."
+git switch "$base"
+git pull --ff-only
+
+# 3. Delete local branches whose upstream is gone (merged + remote-deleted).
+gone="$(git for-each-ref --format '%(refname:short) %(upstream:track)' refs/heads \
+          | awk '$2 == "[gone]" { print $1 }')"
+if [[ -n "$gone" ]]; then
+  echo "baseline: removing merged local branches:"
+  while IFS= read -r b; do
+    [[ -n "$b" ]] && git branch -D "$b"
+  done <<< "$gone"
+fi
+
+echo "baseline: on '$base', clean and up to date."
+git status -sb
