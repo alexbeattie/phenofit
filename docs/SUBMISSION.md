@@ -79,7 +79,8 @@ without an API key. That's PhenoFit."
   contract (LLM proposes, ontology validates), so AI never touches the scored call.
 - **Depth & Execution (20%):** deterministic sourced engine, ontology-aware
   matching with container-node exclusion, information-content (rarity) weighting
-  from the HPO annotation network, abstention, 26 offline tests, a measured eval
-  with an honest caveat.
+  from the HPO annotation network, abstention, 108 offline tests, a measured eval
+  with an honest caveat. The optional AlphaGenome research lookup is isolated in
+  a disposable subprocess, so a native-library failure cannot kill the app.
 - **Demo (30%):** one-drop PDF → ranked, cited answer with a genuine
   dual-diagnosis story; runs from a clean clone.
