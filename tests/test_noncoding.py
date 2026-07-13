@@ -86,6 +86,23 @@ class NoncodingTests(unittest.TestCase):
         self.assertAlmostEqual(res.splicing[0].quantile, 0.99)  # strongest kept
         self.assertEqual(res.regulatory[0].direction, "up")
 
+    def test_reports_only_scoring_stages_it_actually_enters(self):
+        stages = []
+
+        def fake_scorer(*args, **kwargs):
+            return pd.DataFrame()
+
+        res = noncoding.score(
+            self._coords(), api_key="k", _scorer=fake_scorer,
+            _progress=lambda stage, message: stages.append((stage, message)),
+        )
+
+        self.assertTrue(res.available)
+        self.assertEqual(
+            [stage for stage, _ in stages],
+            ["scoring_splicing", "scoring_regulatory", "preparing_evidence"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

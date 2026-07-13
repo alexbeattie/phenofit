@@ -40,8 +40,10 @@
   button {
     width: 100%; padding: 12px 16px; border: 0; border-radius: 10px; cursor: pointer;
     background: var(--accent); color: white; font-weight: 700; font-size: 14.5px;
+    transition: opacity .12s ease-out;
   }
   button:disabled { opacity: .55; cursor: default; }
+  button:not(:disabled):active { transform: scale(.97); }
   /* Run stays pinned to the bottom of the (scrollable) input column, always reachable */
   #run { position: sticky; bottom: 0; margin: 6px 0 16px; box-shadow: 0 -10px 14px 6px var(--bg); }
   button.secondary { width: auto; padding: 8px 14px; font-size: 13px; background: var(--panel2); border: 1px solid var(--line); color: var(--ink); }
@@ -94,6 +96,23 @@
   .err { background: rgba(255,107,107,.12); border: 1px solid rgba(255,107,107,.4); color: #ffc2c2;
          padding: 12px 14px; border-radius: 10px; margin-top: 20px; }
   .loading { color: var(--muted); margin-top: 40px; text-align: center; }
+  .busy-line { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); }
+  .spinner {
+    width: 14px; height: 14px; flex: 0 0 14px; border-radius: 50%;
+    border: 2px solid rgba(154,166,189,.3); border-top-color: currentColor;
+    animation: spin .7s linear infinite;
+  }
+  button .busy-line { color: inherit; justify-content: center; }
+  .cancel-job { width: auto; margin-left: 10px; padding: 4px 9px; font-size: 11.5px;
+    background: transparent; color: var(--muted); border: 1px solid var(--line); }
+  .cancel-job:hover { color: var(--ink); border-color: var(--muted); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) {
+    button { transition: none; }
+    button:not(:disabled):active { transform: none; opacity: .85; }
+    .spinner { animation: busy-pulse 1.1s ease-in-out infinite; border-top-color: rgba(154,166,189,.3); }
+    @keyframes busy-pulse { 50% { opacity: .35; } }
+  }
   .disease { color: var(--muted); font-size: 12.5px; font-style: italic; }
   h2.sec { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 10px; }
   .drop {
@@ -148,7 +167,7 @@
       <input id="pdf-input" type="file" accept="application/pdf,.pdf" multiple style="display:none" />
       <div id="doc-list" class="doc-list"></div>
       <button id="ingest-all" class="secondary" style="margin-top:8px;display:none">Ingest all documents</button>
-      <div id="drop-status" class="hint"></div>
+      <div id="drop-status" class="hint" role="status" aria-live="polite"></div>
     </div>
     <div class="field">
       <label>Reported variants
@@ -160,7 +179,7 @@
       <label>Clinical notes <span class="hint">— paste free text; Claude extracts the phenotypes</span></label>
       <textarea id="notes" placeholder="e.g. 4 yo with recurrent febrile and afebrile seizures since infancy, global developmental delay, and gait ataxia. Bilateral ectopia lentis and aortic root dilatation. Tall stature with arachnodactyly."></textarea>
       <button id="extract" class="secondary" style="margin-top:8px">Extract phenotypes with Claude</button>
-      <div id="extract-status" class="hint" style="margin-top:6px"></div>
+      <div id="extract-status" class="hint" role="status" aria-live="polite" style="margin-top:6px"></div>
     </div>
     <div class="field">
       <label>Patient features
@@ -178,6 +197,35 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
+const ALPHAGENOME_CRASH_MESSAGE = "AlphaGenome worker crashed. PhenoFit is still running.";
+
+function busyMarkup(message) {
+  return '<span class="busy-line" role="status" aria-live="polite">' +
+         '<span class="spinner" aria-hidden="true"></span><span>' + esc(message) + '</span></span>';
+}
+
+function setButtonBusy(button, busy, message) {
+  if (busy) {
+    if (!button.dataset.idleLabel) button.dataset.idleLabel = button.textContent.trim();
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    button.innerHTML = busyMarkup(message);
+  } else {
+    button.disabled = false;
+    button.setAttribute("aria-busy", "false");
+    if (button.dataset.idleLabel) button.textContent = button.dataset.idleLabel;
+  }
+}
+
+function setStatus(element, message, kind = "busy") {
+  element.setAttribute("role", "status");
+  element.setAttribute("aria-live", "polite");
+  element.setAttribute("aria-busy", kind === "busy" ? "true" : "false");
+  if (kind === "busy") element.innerHTML = busyMarkup(message);
+  else if (kind === "error") element.innerHTML = '<span style="color:var(--bad)">' + esc(message) + '</span>';
+  else if (kind === "success") element.innerHTML = '<span style="color:var(--good)">' + esc(message) + '</span>';
+  else element.textContent = message;
+}
 
 // The demo case, used to pre-fill the boxes ONLY when AI ingestion is off (no
 // API key). When it's on, the boxes start empty so dropping the sample lab-report
@@ -205,8 +253,11 @@ function tierColor(level) {
 async function run() {
   const variants = $("variants").value.split("\n").map(s => s.trim()).filter(Boolean);
   const features = $("features").value.split("\n").map(s => s.trim()).filter(Boolean);
-  $("run").disabled = true;
-  $("results").innerHTML = '<div class="loading">Querying HPO and scoring… (a few seconds per gene)</div>';
+  const button = $("run");
+  const message = "Grounding patient features in HPO and scoring phenotype fit…";
+  setButtonBusy(button, true, "Reviewing phenotype fit…");
+  $("results").setAttribute("aria-busy", "true");
+  $("results").innerHTML = '<div class="loading">' + busyMarkup(message) + '</div>';
   try {
     const resp = await fetch("/api/review", {
       method: "POST", headers: {"Content-Type": "application/json"},
@@ -214,9 +265,10 @@ async function run() {
     });
     render(await resp.json());
   } catch (e) {
-    $("results").innerHTML = '<div class="err">Request failed: ' + e + '</div>';
+    $("results").innerHTML = '<div class="err">Request failed: ' + esc(e) + '</div>';
   } finally {
-    $("run").disabled = false;
+    $("results").setAttribute("aria-busy", "false");
+    setButtonBusy(button, false);
   }
 }
 
@@ -333,9 +385,9 @@ function render(data) {
   $("results").innerHTML = html;
 
   document.querySelectorAll(".brief-btn:not(.ag-btn)").forEach(b => b.addEventListener("click", () =>
-    loadBrief(b.dataset.idx, b.dataset.gene, b.dataset.disease)));
+    loadBrief(b, b.dataset.idx, b.dataset.gene, b.dataset.disease)));
   document.querySelectorAll(".ag-btn").forEach(b => b.addEventListener("click", () =>
-    loadAlphaGenome(b.dataset.idx, b.dataset.gene, b.dataset.hgvs)));
+    loadAlphaGenome(b, b.dataset.idx, b.dataset.gene, b.dataset.hgvs)));
 
   if (data.trace) {
     $("trace-link").addEventListener("click", (e) => {
@@ -353,25 +405,27 @@ function render(data) {
 async function extract() {
   const notes = $("notes").value.trim();
   if (!notes) { $("extract-status").textContent = "Paste some clinical notes first."; return; }
-  $("extract").disabled = true;
-  $("extract-status").textContent = "Asking Claude, then grounding each phrase in HPO…";
+  const button = $("extract");
+  const status = $("extract-status");
+  setButtonBusy(button, true, "Extracting phenotypes…");
+  setStatus(status, "Claude is extracting phenotype phrases; then PhenoFit grounds them in HPO…");
   try {
     const resp = await fetch("/api/extract", {
       method: "POST", headers: {"Content-Type": "application/json"},
       body: JSON.stringify({notes})
     });
     const data = await resp.json();
-    if (data.error) { $("extract-status").innerHTML = '<span style="color:var(--bad)">' + data.error + '</span>'; return; }
+    if (data.error) { setStatus(status, data.error, "error"); return; }
     const labels = data.phenotypes.map(p => p.label);
     $("features").value = labels.join("\n");
     let msg = "Extracted " + labels.length + " HPO term(s); review/edit below, then run.";
     if (data.ungrounded && data.ungrounded.length)
       msg += " Not grounded in HPO: " + data.ungrounded.join(", ") + ".";
-    $("extract-status").textContent = msg;
+    setStatus(status, msg, "success");
   } catch (e) {
-    $("extract-status").innerHTML = '<span style="color:var(--bad)">Request failed: ' + e + '</span>';
+    setStatus(status, "Request failed: " + e, "error");
   } finally {
-    $("extract").disabled = false;
+    setButtonBusy(button, false);
   }
 }
 
@@ -423,25 +477,28 @@ function queueFiles(files) {
 
 async function ingestAll() {
   const status = $("drop-status");
-  const roles = Array.from($("doc-list").querySelectorAll("select")).map(s => s.value);
-  const documents = [];
-  for (let i = 0; i < docQueue.length; i++) {
-    const content = await fileToBase64(docQueue[i].file);
-    documents.push({ role: roles[i] || "clinical_note", kind: "pdf", name: docQueue[i].name, content });
+  const button = $("ingest-all");
+  const notes = $("notes") ? $("notes").value.trim() : "";
+  if (!docQueue.length && !notes) {
+    setStatus(status, "Add at least one PDF, or type clinical notes.", "error");
+    return;
   }
-  const notes = $("notes") ? $("notes").value.trim() : "";  // fold the typed notes box in as a document
-  if (notes) documents.push({ role: "clinical_note", kind: "text", name: "typed notes", content: notes });
-  if (!documents.length) { status.textContent = "Add at least one PDF, or type clinical notes."; return; }
-
-  $("ingest-all").disabled = true;
-  status.textContent = "Reading " + documents.length + " document(s), asking Claude + grounding in HPO…";
+  setButtonBusy(button, true, "Ingesting documents…");
+  setStatus(status, "Reading documents with Claude and grounding findings in HPO…");
+  const roles = Array.from($("doc-list").querySelectorAll("select")).map(s => s.value);
   try {
+    const documents = [];
+    for (let i = 0; i < docQueue.length; i++) {
+      const content = await fileToBase64(docQueue[i].file);
+      documents.push({ role: roles[i] || "clinical_note", kind: "pdf", name: docQueue[i].name, content });
+    }
+    if (notes) documents.push({ role: "clinical_note", kind: "text", name: "typed notes", content: notes });
     const resp = await fetch("/api/ingest-docs", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ documents })
     });
     const data = await resp.json();
-    if (data.error) { status.innerHTML = '<span style="color:var(--bad)">' + data.error + '</span>'; return; }
+    if (data.error) { setStatus(status, data.error, "error"); return; }
 
     const vlines = (data.variants || []).map(v => [v.gene, v.hgvs, v.hgvs_p].filter(Boolean).join(":"));
     if (vlines.length) $("variants").value = vlines.join("\n");
@@ -453,11 +510,11 @@ async function ingestAll() {
               " feature(s) across " + nd + " document(s). Review/edit, then run.";
     if (data.ungrounded && data.ungrounded.length)
       msg += " Not grounded in HPO: " + data.ungrounded.join(", ") + ".";
-    status.innerHTML = '<span style="color:var(--good)">' + msg + '</span>';
+    setStatus(status, msg, "success");
   } catch (e) {
-    status.innerHTML = '<span style="color:var(--bad)">Request failed: ' + e + '</span>';
+    setStatus(status, "Request failed: " + e, "error");
   } finally {
-    $("ingest-all").disabled = false;
+    setButtonBusy(button, false);
   }
 }
 
@@ -476,16 +533,17 @@ function wireDropzone() {
 }
 
 // ---- AI-drafted management brief (lazy, per disorder) ----
-async function loadBrief(idx, gene, disease) {
+async function loadBrief(button, idx, gene, disease) {
   const box = $("brief-" + idx);
-  box.innerHTML = '<span class="hint">Drafting from public knowledge…</span>';
+  setButtonBusy(button, true, "Drafting summary…");
+  setStatus(box, "Claude is drafting a management summary…");
   try {
     const resp = await fetch("/api/management", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ gene, disease })
     });
     const d = await resp.json();
-    if (d.error) { box.innerHTML = '<span style="color:var(--bad)">' + esc(d.error) + '</span>'; return; }
+    if (d.error) { setStatus(box, d.error, "error"); return; }
     if (!d.confident) {
       box.innerHTML = '<div class="lbl">AI-drafted · abstained</div><span class="disease">' +
         'Not confidently characterized — consult GeneReviews. ' + esc(d.caveat || "") + '</span>';
@@ -501,33 +559,80 @@ async function loadBrief(idx, gene, disease) {
     if (d.caveat) h += '<span class="hint">' + esc(d.caveat) + '</span>';
     box.innerHTML = h;
   } catch (e) {
-    box.innerHTML = '<span style="color:var(--bad)">Request failed: ' + e + '</span>';
+    setStatus(box, "Request failed: " + e, "error");
+  } finally {
+    setButtonBusy(button, false);
   }
 }
 
-async function loadAlphaGenome(idx, gene, hgvs) {
+function renderAlphaGenome(box, d) {
+  const grp = (title, items) => items && items.length
+    ? '<div class="grp">' + title + '</div><ul>' + items.map(s => '<li>' + esc(s.interpretation) + '</li>').join("") + '</ul>'
+    : "";
+  let h = '<div class="lbl">AlphaGenome — research model, not clinically validated · ' +
+          esc(d.variant_id) + (d.is_noncoding ? ' · non-coding' : ' · ' + esc(d.consequence || '')) + '</div>';
+  h += grp("Splicing", d.splicing);
+  h += grp("Regulatory", d.regulatory);
+  if (!(d.splicing || []).length && !(d.regulatory || []).length)
+    h += '<span class="hint">No notable splicing or regulatory signal predicted.</span>';
+  if (d.source) h += '<a class="src" href="' + esc(d.source) + '" target="_blank" rel="noopener">AlphaGenome &#8599;</a>';
+  box.setAttribute("aria-busy", "false");
+  box.innerHTML = h;
+}
+
+function showAlphaProgress(box, jobId, message) {
+  box.setAttribute("aria-busy", "true");
+  box.innerHTML = busyMarkup(message) +
+    '<button class="cancel-job" type="button">Cancel AlphaGenome</button>';
+  box.querySelector(".cancel-job").addEventListener("click", async (event) => {
+    event.currentTarget.disabled = true;
+    event.currentTarget.textContent = "Cancelling…";
+    await fetch("/api/jobs/" + jobId, { method: "DELETE" });
+  }, { once: true });
+}
+
+async function pollAlphaGenome(jobId, box) {
+  while (true) {
+    const response = await fetch("/api/jobs/" + jobId);
+    const job = await response.json();
+    if (!response.ok) throw new Error(job.error || "Could not read AlphaGenome job.");
+    if (job.state === "queued" || job.state === "running") {
+      showAlphaProgress(box, jobId, job.message || "AlphaGenome is working…");
+      await new Promise(resolve => setTimeout(resolve, 400));
+      continue;
+    }
+    if (job.state === "succeeded") {
+      renderAlphaGenome(box, job.result);
+      return;
+    }
+    if (job.state === "cancelled") {
+      setStatus(box, "AlphaGenome scoring cancelled.", "plain");
+      return;
+    }
+    const message = job.result && job.result.worker_crashed
+      ? ALPHAGENOME_CRASH_MESSAGE
+      : (job.error || "AlphaGenome scoring failed.");
+    setStatus(box, message, "error");
+    return;
+  }
+}
+
+async function loadAlphaGenome(button, idx, gene, hgvs) {
   const box = $("ag-" + idx);
-  box.innerHTML = '<span class="hint">Resolving coordinates (VEP) and scoring (AlphaGenome)… a few seconds.</span>';
+  setButtonBusy(button, true, "Starting AlphaGenome…");
+  setStatus(box, "Submitting isolated AlphaGenome job…");
   try {
-    const resp = await fetch("/api/alphagenome", {
+    const resp = await fetch("/api/alphagenome/jobs", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ gene, hgvs })
     });
     const d = await resp.json();
-    if (d.error) { box.innerHTML = '<span style="color:var(--bad)">' + esc(d.error) + '</span>'; return; }
-    const grp = (title, items) => items && items.length
-      ? '<div class="grp">' + title + '</div><ul>' + items.map(s => '<li>' + esc(s.interpretation) + '</li>').join("") + '</ul>'
-      : "";
-    let h = '<div class="lbl">AlphaGenome — research model, not clinically validated · ' +
-            esc(d.variant_id) + (d.is_noncoding ? ' · non-coding' : ' · ' + esc(d.consequence || '')) + '</div>';
-    h += grp("Splicing", d.splicing);
-    h += grp("Regulatory", d.regulatory);
-    if (!(d.splicing || []).length && !(d.regulatory || []).length)
-      h += '<span class="hint">No notable splicing or regulatory signal predicted.</span>';
-    if (d.source) h += '<a class="src" href="' + d.source + '" target="_blank" rel="noopener">AlphaGenome &#8599;</a>';
-    box.innerHTML = h;
+    if (!resp.ok || d.error) { setStatus(box, d.error || "Could not start AlphaGenome.", "error"); return; }
+    await pollAlphaGenome(d.job_id, box);
   } catch (e) {
-    box.innerHTML = '<span style="color:var(--bad)">Request failed: ' + e + '</span>';
+    setStatus(box, "Request failed: " + e, "error");
+  } finally {
+    setButtonBusy(button, false);
   }
 }
 

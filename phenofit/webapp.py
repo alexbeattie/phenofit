@@ -22,6 +22,7 @@ import hmac
 import json
 import os
 import webbrowser
+from dataclasses import fields
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -29,7 +30,9 @@ from .config import load_dotenv
 from .coords import resolve as resolve_coords
 from .engine import causality_probability, rarity_tag as _rarity_tag, review_causality
 from .extract import extract_from_notes, ingest_documents, ingest_report
-from .noncoding import is_configured as alphagenome_configured, score as score_noncoding
+from .alphagenome_isolation import run_isolated
+from .jobs import JobRegistry
+from .noncoding import is_configured as alphagenome_configured
 from .hpo import resolve_term
 from .http import get_client
 from .llm import LLMError, draft_management_brief, is_configured
@@ -304,7 +307,13 @@ def _run_management(payload: dict) -> dict:
     }
 
 
-def _run_alphagenome(payload: dict) -> dict:
+def _run_alphagenome(
+    payload: dict,
+    *,
+    progress=None,
+    cancel_event=None,
+    _isolated_runner=run_isolated,
+) -> dict:
     """Resolve a variant's coordinates and score its non-coding/splicing effect.
 
     Gene + coding HGVS -> GRCh38 coordinates (Ensembl VEP, free) -> AlphaGenome
@@ -319,28 +328,28 @@ def _run_alphagenome(payload: dict) -> dict:
     if not alphagenome_configured():
         return {"error": "AlphaGenome unavailable (ALPHAGENOME_API_KEY not set)."}
 
+    if progress:
+        progress("resolving_coordinates", "Resolving GRCh38 coordinates with Ensembl VEP…")
     with get_client() as client:
         co = resolve_coords(client, gene, hgvs)
     if not co.resolved:
         return {"error": f"Could not resolve coordinates via VEP: {co.reason}"}
 
-    res = score_noncoding(co)
-    if not res.available:
-        return {"error": res.reason, "variant_id": res.variant_id}
-
-    def _sig(s):
-        return {"interpretation": s.interpretation, "quantile": s.quantile, "direction": s.direction}
-
-    return {
-        "variant_id": res.variant_id,
-        "consequence": co.consequence,
-        "is_noncoding": co.is_noncoding,
-        "protein_hgvs": co.protein_hgvs,
-        "splicing": [_sig(s) for s in res.splicing],
-        "regulatory": [_sig(s) for s in res.regulatory],
-        "research_use_only": res.research_use_only,
-        "source": res.source.url if res.source else "",
+    if progress:
+        progress("starting_worker", "Starting isolated AlphaGenome worker…")
+    coordinate_payload = {
+        field.name: getattr(co, field.name)
+        for field in fields(co)
+        if field.name != "source"
     }
+    return _isolated_runner(
+        {"coordinates": coordinate_payload},
+        progress=progress,
+        cancel_event=cancel_event,
+    )
+
+
+_JOBS = JobRegistry(_run_alphagenome)
 
 
 class _Server(ThreadingHTTPServer):
@@ -357,6 +366,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _send_json(self, code: int, value: dict) -> None:
+        self._send(code, json.dumps(value).encode(), "application/json")
+
+    def _read_json(self) -> dict:
+        length = int(self.headers.get("Content-Length", 0))
+        return json.loads(self.rfile.read(length) or b"{}")
 
     def _authorized(self) -> bool:
         """Enforce Basic Auth when APP_PASSWORD is set; send 401 and return False if not."""
@@ -378,12 +394,36 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, html, "text/html; charset=utf-8")
         elif self.path == "/api/config":
             cfg = {"ai_enabled": is_configured(), "alphagenome_enabled": alphagenome_configured()}
-            self._send(200, json.dumps(cfg).encode(), "application/json")
+            self._send_json(200, cfg)
+        elif self.path.startswith("/api/jobs/"):
+            snapshot = _JOBS.get(self.path.removeprefix("/api/jobs/").split("?", 1)[0])
+            if snapshot is None:
+                self._send_json(404, {"error": "Job not found."})
+            else:
+                self._send_json(200, snapshot)
         else:
             self._send(404, b"not found", "text/plain")
 
     def do_POST(self) -> None:
         if not self._authorized():
+            return
+        if self.path == "/api/alphagenome/jobs":
+            try:
+                payload = self._read_json()
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json(400, {"error": f"Invalid JSON: {exc}"})
+                return
+            if not (payload.get("gene") or "").strip():
+                self._send_json(400, {"error": "No gene provided."})
+                return
+            if not alphagenome_configured():
+                self._send_json(503, {"error": "AlphaGenome unavailable (ALPHAGENOME_API_KEY not set)."})
+                return
+            job_id = _JOBS.start(payload)
+            if job_id is None:
+                self._send_json(429, {"error": "AlphaGenome is busy; try again after a running job finishes."})
+                return
+            self._send_json(202, {"job_id": job_id})
             return
         routes = {
             "/api/review": _run_review,
@@ -397,13 +437,26 @@ class Handler(BaseHTTPRequestHandler):
         if handler is None:
             self._send(404, b"not found", "text/plain")
             return
-        length = int(self.headers.get("Content-Length", 0))
         try:
-            payload = json.loads(self.rfile.read(length) or b"{}")
+            payload = self._read_json()
             result = handler(payload)
         except Exception as exc:  # surface to UI, don't 500 silently
             result = {"error": f"{type(exc).__name__}: {exc}"}
-        self._send(200, json.dumps(result).encode(), "application/json")
+        self._send_json(200, result)
+
+    def do_DELETE(self) -> None:
+        if not self._authorized():
+            return
+        if not self.path.startswith("/api/jobs/"):
+            self._send(404, b"not found", "text/plain")
+            return
+        job_id = self.path.removeprefix("/api/jobs/").split("?", 1)[0]
+        if _JOBS.get(job_id) is None:
+            self._send_json(404, {"error": "Job not found."})
+        elif _JOBS.cancel(job_id):
+            self._send_json(200, {"job_id": job_id, "message": "Cancellation requested."})
+        else:
+            self._send_json(409, {"error": "Job is already complete."})
 
 
 def _bind(host: str, port: int, tries: int = 20) -> _Server:

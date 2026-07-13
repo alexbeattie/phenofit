@@ -143,7 +143,13 @@ def _summarize(df, gene: str, kinds: tuple[str, ...], kind: str, top: int = 3) -
     return out[:top]
 
 
-def score(coords: Coordinates, *, api_key: str | None = None, _scorer=None) -> AlphaGenomeResult:
+def score(
+    coords: Coordinates,
+    *,
+    api_key: str | None = None,
+    _scorer=None,
+    _progress=None,
+) -> AlphaGenomeResult:
     """Score a resolved variant for splicing + regulatory effect on its gene.
 
     `_scorer` is injectable for tests. Degrades to available=False + reason on a
@@ -164,7 +170,11 @@ def score(coords: Coordinates, *, api_key: str | None = None, _scorer=None) -> A
 
     run = _scorer or _score
     try:
+        if _progress:
+            _progress("scoring_splicing", "Scoring splicing signals…")
         splice_df = run(coords.chrom, coords.pos, coords.ref, coords.alt, SPLICING_SCORERS, api_key=key)
+        if _progress:
+            _progress("scoring_regulatory", "Scoring regulatory signals…")
         reg_df = run(coords.chrom, coords.pos, coords.ref, coords.alt, REGULATORY_SCORERS, api_key=key)
     except ImportError:
         return AlphaGenomeResult(available=False, variant_id=variant_id,
@@ -174,6 +184,8 @@ def score(coords: Coordinates, *, api_key: str | None = None, _scorer=None) -> A
         return AlphaGenomeResult(available=False, variant_id=variant_id,
                                  reason=f"AlphaGenome API error: {exc}", source=source)
 
+    if _progress:
+        _progress("preparing_evidence", "Preparing research-model evidence…")
     return AlphaGenomeResult(
         available=True,
         variant_id=variant_id,

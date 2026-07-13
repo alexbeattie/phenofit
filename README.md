@@ -72,6 +72,17 @@ that governs whether a variant's zygosity even fits — with an openable omim.or
 link. It is **purely corroborative and never reorders the ranking**; with no key
 the layer is inert and the tool runs unchanged.
 
+### AlphaGenome lookup (isolated research model)
+
+With `ALPHAGENOME_API_KEY` and the optional AlphaGenome dependencies installed,
+each result card can launch a separate non-coding/splicing lookup. This output is
+explicitly **research-only and does not change the phenotype ranking**. The web
+server resolves GRCh38 coordinates, then runs the AlphaGenome SDK, pandas,
+PyArrow, and other native dependencies in a fresh subprocess. A native crash,
+timeout, malformed response, or cancellation ends only that worker; PhenoFit
+stays available and reports the failure instead of disappearing. The UI shows
+the real stage reached and offers a per-job Cancel button.
+
 ### Decision trace (show-your-work, for evals / RL)
 
 Every review can emit a machine-readable **decision trace** (`phenofit.trace/v1`):
@@ -179,13 +190,14 @@ other myopathies.
 ./.venv/bin/python -m unittest discover -s tests
 ```
 
-58 offline tests (no network, no key): the scoring engine (matching, tiering,
+108 offline tests (no network, no key): the scoring engine (matching, tiering,
 explained/unexplained split, ranking, residual, dual-diagnosis, rarity weighting,
 consequence annotation), the HPO term ranking + container filtering +
 information-content weighting + parenthetical round-trip, the molecular-consequence
 classifier (including its abstentions), the OMIM corroboration layer (parse /
 no-key / network-error / gene-absent), the decision-trace builder (shape + numbers
-reconcile), the mocked-SDK ingestion edge, and PDF extraction.
+reconcile), the mocked-SDK ingestion edge, PDF extraction, accessible loading
+states, job polling/cancellation, and fatal-signal containment for AlphaGenome.
 
 ## Architecture
 
@@ -205,6 +217,10 @@ phenofit/
   llm.py        Claude edge via anthropic SDK structured outputs (Pydantic schemas)
   extract.py    ingestion: Claude proposes -> HPO grounds -> validated terms only
   pdf.py        lab-report PDF -> text (pypdf)
+  noncoding.py  AlphaGenome scoring/summarization contract (research-only)
+  alphagenome_worker.py     disposable process that loads native model dependencies
+  alphagenome_isolation.py  parent-side JSON-lines runner; timeout/crash containment
+  jobs.py       thread-safe, browser-polled AlphaGenome job lifecycle + cancellation
   cli.py        run a review from the terminal (+ hardcoded demo, --trace)
   webapp.py     stdlib HTTP server + JSON endpoints calling the same engine
   static/       single-page UI (no web framework)
