@@ -154,7 +154,7 @@
       <label>Reported variants
         <span class="hint">— one per line: <code>GENE</code> or <code>GENE:c.HGVS</code></span>
       </label>
-      <textarea id="variants" placeholder="SCN1A:c.3637C>T&#10;FBN1:c.4082G>A&#10;MYH7:c.1063G>A"></textarea>
+      <textarea id="variants" placeholder="e.g.  SCN1A:c.3637C>T  (or a bare gene like UBE3A) — one per line"></textarea>
     </div>
     <div class="field" id="ai-field" style="display:none">
       <label>Clinical notes <span class="hint">— paste free text; Claude extracts the phenotypes</span></label>
@@ -166,7 +166,7 @@
       <label>Patient features
         <span class="hint">— one per line, plain English or HP:xxxxxxx</span>
       </label>
-      <textarea id="features" placeholder="Seizure&#10;Global developmental delay&#10;Gait ataxia&#10;Ectopia lentis&#10;Aortic root dilatation&#10;Tall stature&#10;Arachnodactyly"></textarea>
+      <textarea id="features" placeholder="e.g.  Seizure  (or an HP:xxxxxxx id) — one per line"></textarea>
     </div>
     <button id="run">Run causality review</button>
   </section>
