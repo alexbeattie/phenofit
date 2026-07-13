@@ -154,9 +154,7 @@
       <label>Reported variants
         <span class="hint">— one per line: <code>GENE</code> or <code>GENE:c.HGVS</code></span>
       </label>
-      <textarea id="variants">SCN1A:c.3637C>T
-FBN1:c.4082G>A
-MYH7:c.1063G>A</textarea>
+      <textarea id="variants" placeholder="SCN1A:c.3637C>T&#10;FBN1:c.4082G>A&#10;MYH7:c.1063G>A"></textarea>
     </div>
     <div class="field" id="ai-field" style="display:none">
       <label>Clinical notes <span class="hint">— paste free text; Claude extracts the phenotypes</span></label>
@@ -168,13 +166,7 @@ MYH7:c.1063G>A</textarea>
       <label>Patient features
         <span class="hint">— one per line, plain English or HP:xxxxxxx</span>
       </label>
-      <textarea id="features">Seizure
-Global developmental delay
-Gait ataxia
-Ectopia lentis
-Aortic root dilatation
-Tall stature
-Arachnodactyly</textarea>
+      <textarea id="features" placeholder="Seizure&#10;Global developmental delay&#10;Gait ataxia&#10;Ectopia lentis&#10;Aortic root dilatation&#10;Tall stature&#10;Arachnodactyly"></textarea>
     </div>
     <button id="run">Run causality review</button>
   </section>
@@ -186,6 +178,16 @@ Arachnodactyly</textarea>
 
 <script>
 const $ = (id) => document.getElementById(id);
+
+// The demo case, used to pre-fill the boxes ONLY when AI ingestion is off (no
+// API key). When it's on, the boxes start empty so dropping the sample lab-report
+// PDF visibly fills them — otherwise the drop looks like it did nothing.
+const SEED_VARIANTS = "SCN1A:c.3637C>T\nFBN1:c.4082G>A\nMYH7:c.1063G>A";
+const SEED_FEATURES = "Seizure\nGlobal developmental delay\nGait ataxia\nEctopia lentis\nAortic root dilatation\nTall stature\nArachnodactyly";
+function seedDemoCase() {
+  $("variants").value = SEED_VARIANTS;
+  $("features").value = SEED_FEATURES;
+}
 
 function starHtml(stars) {
   let out = "";
@@ -536,8 +538,12 @@ fetch("/api/config").then(r => r.json()).then(cfg => {
     $("ai-field").style.display = "block";
     $("pdf-field").style.display = "block";
     wireDropzone();
+    // Boxes stay empty: dropping the sample lab-report PDF fills them.
+  } else {
+    // No AI ingestion (no key) — no PDF drop, so pre-fill the demo case.
+    seedDemoCase();
   }
-}).catch(() => {});
+}).catch(() => { seedDemoCase(); });
 
 $("run").addEventListener("click", run);
 $("extract").addEventListener("click", extract);
